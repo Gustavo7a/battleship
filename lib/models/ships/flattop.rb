@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class Flattop < Warship
+class Flattop < Ship
   def initialize
     super(6)
   end

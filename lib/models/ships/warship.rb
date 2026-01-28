@@ -1,4 +1,7 @@
 # frozen_string_literal: true
 
-class Warship
+class Warship < Ship
+  def initialize
+    super(4)
+  end
 end

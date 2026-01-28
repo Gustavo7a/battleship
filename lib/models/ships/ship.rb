@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class Warship
+class Ship
   attr_accessor :ship_size, :positions, :hits, :status
 
   INTACT    = 0
@@ -18,7 +18,7 @@ class Warship
     @hits += 1
     if @hits < @ship_size
       @status = DAMAGED
-    elsif @hits.size == @ship_size
+    elsif @hits == @ship_size
       @status = DESTROYED
     end
   end
