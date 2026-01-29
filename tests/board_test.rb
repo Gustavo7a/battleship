@@ -2,11 +2,13 @@ require 'minitest/autorun'
 require_relative '../lib/models/board'
 require_relative '../lib/models/ships/ship'
 require_relative '../lib/models/ships/submarine'
+require_relative '../lib/engine/shooting_mechanics'
 
 class BoardTest < Minitest::Test
   def setup
     @tabuleiro = Board.new
     @submarino = Submarine.new
+    @tiro = ShootingMechanics.new(@tabuleiro)
   end
 
   def test_posicionar_e_atirar
@@ -37,7 +39,8 @@ class BoardTest < Minitest::Test
     # refute é oposto ao assert
     refute_kind_of(Ship, alvo, "Não deveria ter navio aqui")
 
-    @tabuleiro.set_status(0, 0, Board::MISS)
+    #@tabuleiro.set_status(0, 0, Board::MISS)
+    @tiro.shoot(0, 0)
     assert_equal(Board::MISS, @tabuleiro.status_at(0, 0))
   end
 
