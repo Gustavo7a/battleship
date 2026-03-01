@@ -62,11 +62,11 @@ class MenuScreen < BaseScreen
 
       if relative_y <= BTN_HEIGHT && index >= 0
         case index
-        when 0 then @window.show_screen(:campaign)
-        when 1 then @window.show_screen(:dynamic)
-        when 2 then @window.show_screen(:ranking)
-        when 3 then @window.show_screen(:achievements)
-        when 4 then @window.show_screen(:options)
+        when 0 then @window.request_screen(:campaign)
+        when 1 then @window.request_screen(:dynamic)
+        when 2 then @window.request_screen(:ranking)
+        when 3 then @window.request_screen(:achievements)
+        when 4 then @window.request_screen(:options)
         when 5 then @window.close
         end
       end
