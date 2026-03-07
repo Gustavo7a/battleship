@@ -13,6 +13,7 @@ require_relative '../engine/turn_manager'
 require_relative '../engine/movement_mechanics'
 require_relative '../engine/achievement_manager'
 require_relative '../ui/achievement_notification'
+require_relative '../ui/explosion_animation'
 
 # Tela de jogo principal.
 #
@@ -31,24 +32,15 @@ require_relative '../ui/achievement_notification'
 # @author Jurandir Neto
 class GameScreen < BaseScreen
 
-  # Margem e tamanho de cada célula do grid (apenas lógica, sem sprites reais)
-  CELL_SIZE    = 30
-  GRID_MARGIN  = 20
-
   # Fases do turno do jogador
   PHASE_MOVE  = :move    # pode mover UM navio INTACTO (opcional) — depois ainda pode atirar
   PHASE_SHOOT = :shoot   # atira no tabuleiro inimigo
 
-  # Origem do grid do INIMIGO (jogador clica aqui para atirar)
-  ENEMY_GRID_X = 420
-  ENEMY_GRID_Y = 110
-
-  # Origem do grid do JOGADOR (visual de referência)
-  PLAYER_GRID_X = 20
-  PLAYER_GRID_Y = 110
-
-  # Y inicial do painel inferior (abaixo dos dois grids)
-  BOTTOM_PANEL_Y = 110 + 16 + 10 * 30 + 6   # GRID_Y + LABEL_OFFSET + grid_height + margem
+  # Layout calculado dinamicamente em compute_layout (todos como @vars de instância):
+  # @cs  — cell size         @lo  — label offset
+  # @pgx — player grid X     @pgy — player grid Y
+  # @egx — enemy grid X      @egy — enemy grid Y
+  # @bpy — bottom panel Y
 
   def initialize(window, current_user: nil, campaign_stage: nil, difficulty: nil,
                  pre_placed_fleet: nil, pre_placed_board: nil)
@@ -60,15 +52,18 @@ class GameScreen < BaseScreen
     @pre_placed_fleet = pre_placed_fleet    # Array<Ship> já posicionados
     @pre_placed_board = pre_placed_board    # Board já montado
 
-    @achievement_manager = AchievementManager.new
+    @achievement_manager = @window.achievement_manager
     @achievement_manager.reset_session
     @notification = AchievementNotification.new
+    @explosion    = ExplosionAnimation.new
+    @sfx_hit      = Gosu::Sample.new(File.join('assets', 'sfx', 'shoot.wav'))
+    @sfx_splash   = Gosu::Sample.new(File.join('assets', 'sfx', 'water_splash.wav'))
     @game_start   = Time.now
 
     @status_message = "Selecione um navio para mover (ou pule) e depois atire!"
     @game_over      = false
+    @paused         = false
     @ai_timer       = 0
-    @grid_font      = Gosu::Font.new(11)
 
     # Movimento de navios: disponível APENAS no modo dinâmico (sem campanha)
     @movement_enabled = @campaign_stage.nil?
@@ -83,23 +78,16 @@ class GameScreen < BaseScreen
     # Controle interno do turno da IA: :decide -> :move_done ou :shoot
     @ai_phase       = :decide
 
-    # Sprite de água
-    begin
-      @water_tile = Gosu::Image.new(
-        File.join("assets", "images", "agua.png"),
-        tileable: true
-      )
-    rescue
-      @water_tile = nil
-    end
-
+    load_ship_sprites
+    compute_layout   # layout inicial; recomputa automaticamente se a janela mudar
     setup_game
   end
 
   # Loop principal
   def update
     @notification.update
-    return if @game_over
+    @explosion.update
+    return if @game_over || @paused
 
     if @turn_manager.current_turn == :ai
       @ai_timer += 1
@@ -111,20 +99,31 @@ class GameScreen < BaseScreen
   end
 
   def draw
+    compute_layout_if_needed
     draw_header(header_title)
 
     draw_player_grid
     draw_enemy_grid
     draw_bottom_panel
 
+    @explosion.draw
     @notification.draw(@window.width)
 
+    draw_pause_button
+    draw_pause_overlay if @paused
     draw_game_over_overlay if @game_over
   end
 
   # Input
 
   def button_down(id)
+    compute_layout_if_needed
+
+    if @paused
+      handle_pause_input(id)
+      return
+    end
+
     if @game_over
       handle_game_over_input(id)
       return
@@ -133,6 +132,13 @@ class GameScreen < BaseScreen
     return unless @turn_manager.current_turn == :player
 
     if id == Gosu::MS_LEFT
+      mx = @window.mouse_x
+      my = @window.mouse_y
+      pb = pause_btn_rect
+      if mx.between?(pb[:x], pb[:x] + pb[:w]) && my.between?(pb[:y], pb[:y] + pb[:h])
+        @paused = true
+        return
+      end
       handle_player_click
     end
 
@@ -146,6 +152,17 @@ class GameScreen < BaseScreen
     # ENTER ou ESPAÇO: pula a fase de movimento (só modo dinâmico)
     if @movement_enabled && @turn_phase == PHASE_MOVE && (id == Gosu::KB_RETURN || id == Gosu::KB_SPACE)
       skip_movement
+    end
+  end
+
+  # ESC: pausa (ou despausa) durante a partida
+  def handle_escape
+    if @paused
+      @paused = false
+    elsif !@game_over
+      @paused = true
+    else
+      @window.request_screen(:menu)
     end
   end
 
@@ -247,18 +264,20 @@ class GameScreen < BaseScreen
   # Clique no grid do JOGADOR seleciona um navio; clique no botão "Pular" pula a fase
   def handle_move_click(mx, my)
     # Botão "Pular" — posição espelhada do draw_bottom_panel
-    skip_bx = PLAYER_GRID_X
-    skip_by = BOTTOM_PANEL_Y + 10 + 22   # panel_y + 10 (frota) + 22 (linha frota)
-    if over_skip_button_at?(skip_bx, skip_by, 150, 34)
+    skip_bx = @pgx
+    skip_by = @bpy + 10 + @info_font.height + 6
+    skip_bw = @btn_font.text_width("Pular [ENTER]") + 24
+    skip_bh = @btn_font.height + 12
+    if over_skip_button_at?(skip_bx, skip_by, skip_bw, skip_bh)
       skip_movement
       return
     end
 
     # Clique numa célula do grid do jogador → seleciona navio
-    gx = PLAYER_GRID_X + LABEL_OFFSET
-    gy = PLAYER_GRID_Y + LABEL_OFFSET
-    x = ((mx - gx) / CELL_SIZE).to_i
-    y = ((my - gy) / CELL_SIZE).to_i
+    gx = @pgx + @lo
+    gy = @pgy + @lo
+    x = ((mx - gx) / @cs).to_i
+    y = ((my - gy) / @cs).to_i
 
     return unless @player.board.inside_bounds?(x, y)
     return if mx < gx || my < gy   # clique na área de label
@@ -307,17 +326,24 @@ class GameScreen < BaseScreen
 
   # Converte clique do mouse em coordenada do grid inimigo e dispara
   def handle_shoot_click(mx, my)
-    # Origem real do grid = ENEMY_GRID + LABEL_OFFSET
-    grid_ox = ENEMY_GRID_X + LABEL_OFFSET
-    grid_oy = ENEMY_GRID_Y + LABEL_OFFSET
+    # Origem real do grid = ENEMY_GRID + label offset
+    grid_ox = @egx + @lo
+    grid_oy = @egy + @lo
 
-    x = ((mx - grid_ox) / CELL_SIZE).to_i
-    y = ((my - grid_oy) / CELL_SIZE).to_i
+    x = ((mx - grid_ox) / @cs).to_i
+    y = ((my - grid_oy) / @cs).to_i
 
     return unless @ai.board.inside_bounds?(x, y)
     return if mx < grid_ox || my < grid_oy   # clique na área de label
 
     result = @turn_manager.player_shoot(x, y)
+
+    if result == :DAMAGED || result == :DESTROYED
+      @explosion.trigger(grid_ox + x * @cs, grid_oy + y * @cs, @cs)
+      @sfx_hit.play(0.1) if @window.sfx_enabled
+    elsif result == :WATER
+      @sfx_splash.play(0.1) if @window.sfx_enabled
+    end
 
     case result
     when :REPEATED, :INVALID
@@ -364,6 +390,13 @@ class GameScreen < BaseScreen
     result, ship, x, y = @turn_manager.ai_turn
     coord_str = x && y ? "(#{x + 1}, #{y + 1})" : "?"
 
+    if (result == :DAMAGED || result == :DESTROYED) && x && y
+      @explosion.trigger(@pgx + @lo + x * @cs, @pgy + @lo + y * @cs, @cs)
+      @sfx_hit.play(0.1) if @window.sfx_enabled
+    elsif result == :WATER
+      @sfx_splash.play(0.1) if @window.sfx_enabled
+    end
+
     case result
     when :WATER
       log_action("IA atirou em #{coord_str} — Água!")
@@ -393,11 +426,6 @@ class GameScreen < BaseScreen
     @status_message = won ? "Vitória! Você afundou todos os navios do inimigo!" : "Derrota! Todos os seus navios afundaram."
 
     register_end(player_fleet: @player.fleet, won: won, score: score)
-
-    # Notifica o GameWindow para atualizar o progresso de campanha
-    if @campaign_stage && won
-      @window.on_campaign_mission_won(@campaign_stage)
-    end
   end
 
   def calculate_score(won)
@@ -418,29 +446,80 @@ class GameScreen < BaseScreen
   CELL_GRID_COLOR      = Gosu::Color.new(0xff_0a1628)
   CELL_GAP             = 2
   LABEL_COLOR          = Gosu::Color.new(0xff_94a3b8)
-  # Espaço reservado para os labels laterais (números) e superiores (letras)
-  LABEL_OFFSET         = 16
 
   def draw_player_grid
-    # "SUA FROTA" acima dos labels
-    @info_font.draw_text("SUA FROTA", PLAYER_GRID_X, PLAYER_GRID_Y - 20, 2, 1.0, 1.0, Theme::COLOR_ACCENT)
-    gx = PLAYER_GRID_X + LABEL_OFFSET   # grid começa após os números laterais
-    gy = PLAYER_GRID_Y + LABEL_OFFSET   # grid começa após as letras superiores
-    grid_px = 10 * CELL_SIZE
+    label_y = @pgy - @lo - @info_font.height - 4
+    @info_font.draw_text("SUA FROTA", @pgx, label_y, 2, 1.0, 1.0, Theme::COLOR_ACCENT)
+    gx = @pgx + @lo
+    gy = @pgy + @lo
+    grid_px = 10 * @cs
     @window.draw_rect(gx, gy, grid_px, grid_px, CELL_GRID_COLOR)
     draw_grid_labels(gx, gy)
-    draw_grid(@player.board, gx, gy, show_ships: true, interactive: false)
+    draw_player_grid_cells(gx, gy)
   end
 
   def draw_enemy_grid
     label = @turn_manager&.current_turn == :player ? "FROTA INIMIGA  ← clique para atirar" : "FROTA INIMIGA  (IA pensando...)"
-    @info_font.draw_text(label, ENEMY_GRID_X, ENEMY_GRID_Y - 20, 2, 1.0, 1.0, Theme::COLOR_ACCENT)
-    gx = ENEMY_GRID_X + LABEL_OFFSET
-    gy = ENEMY_GRID_Y + LABEL_OFFSET
-    grid_px = 10 * CELL_SIZE
+    label_y = @egy - @lo - @info_font.height - 4
+    @info_font.draw_text(label, @egx, label_y, 2, 1.0, 1.0, Theme::COLOR_ACCENT)
+    gx = @egx + @lo
+    gy = @egy + @lo
+    grid_px = 10 * @cs
     @window.draw_rect(gx, gy, grid_px, grid_px, CELL_GRID_COLOR)
     draw_grid_labels(gx, gy)
     draw_grid(@ai.board, gx, gy, show_ships: false, interactive: true)
+    draw_destroyed_enemy_ships(gx, gy)
+  end
+
+  # Desenha a grade do jogador em três camadas:
+  #   1. Água (fundo) em todas as células
+  #   2. Sprites dos navios não-destruídos
+  #   3. Overlays de HIT/MISS/DESTROYED e destaque do navio selecionado
+  def draw_player_grid_cells(ox, oy)
+    cell_inner = @cs - CELL_GAP
+
+    # Camada 1: água em todo o grid
+    10.times do |y|
+      10.times do |x|
+        cx = ox + x * @cs + 1
+        cy = oy + y * @cs + 1
+        @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_WATER)
+      end
+    end
+
+    # Camada 2: sprites dos navios vivos/danificados
+    @player.fleet.each do |ship|
+      next if ship.status == Ship::DESTROYED
+      next if ship.positions.empty? || ship.orientation.nil?
+
+      first_x, first_y = ship.positions.first
+      px = ox + first_x * @cs + 1
+      py = oy + first_y * @cs + 1
+      tint = ship.equal?(@selected_ship) ? CELL_COLOR_SELECTED : Gosu::Color::WHITE
+      draw_ship_sprite(ship, px, py, ship.orientation, ship.ship_size,
+                       @cs, CELL_GAP, z: 2, color: tint)
+    end
+
+    # Camada 3: overlays de HIT / MISS / DESTROYED (no topo das sprites)
+    10.times do |y|
+      10.times do |x|
+        content = @player.board.status_at(x, y)
+        cx = ox + x * @cs + 1
+        cy = oy + y * @cs + 1
+
+        case content
+        when Board::HIT
+          draw_hit_cell(cx, cy, cell_inner, 3)
+        when Board::MISS
+          @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_MISS, 3)
+          draw_miss_x(cx, cy, cell_inner, 4)
+        else
+          if content.is_a?(Ship) && content.status == Ship::DESTROYED
+            @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_DESTROYED, 3)
+          end
+        end
+      end
+    end
   end
 
   # Desenha letras A-J acima e números 1-10 à esquerda do grid.
@@ -449,26 +528,26 @@ class GameScreen < BaseScreen
     col_letters = %w[A B C D E F G H I J]
 
     col_letters.each_with_index do |letter, i|
-      lx = ox + i * CELL_SIZE + (CELL_SIZE - @grid_font.text_width(letter)) / 2
-      ly = oy - LABEL_OFFSET + 2
+      lx = ox + i * @cs + (@cs - @grid_font.text_width(letter)) / 2
+      ly = oy - @lo + 2
       @grid_font.draw_text(letter, lx, ly, 2, 1.0, 1.0, LABEL_COLOR)
     end
 
     10.times do |i|
-      num   = (i + 1).to_s
-      lx    = ox - LABEL_OFFSET + (LABEL_OFFSET - @grid_font.text_width(num)) / 2
-      ly    = oy + i * CELL_SIZE + (CELL_SIZE - @grid_font.height) / 2
+      num = (i + 1).to_s
+      lx  = ox - @lo + (@lo - @grid_font.text_width(num)) / 2
+      ly  = oy + i * @cs + (@cs - @grid_font.height) / 2
       @grid_font.draw_text(num, lx, ly, 2, 1.0, 1.0, LABEL_COLOR)
     end
   end
 
   def draw_grid(board, ox, oy, show_ships:, interactive:)
-    cell_inner = CELL_SIZE - CELL_GAP   # 28px de conteúdo + 2px de grade
+    cell_inner = @cs - CELL_GAP
 
     10.times do |y|
       10.times do |x|
-        cx = ox + x * CELL_SIZE + 1
-        cy = oy + y * CELL_SIZE + 1
+        cx = ox + x * @cs + 1
+        cy = oy + y * @cs + 1
 
         content  = board.status_at(x, y)
         is_water = water_cell?(content, show_ships)
@@ -480,25 +559,169 @@ class GameScreen < BaseScreen
         # Hover no grid inimigo (somente células ainda não atiradas)
         hover = false
         if interactive && !@game_over && @turn_manager.current_turn == :player && @turn_phase == PHASE_SHOOT
-          hit_x = ox + x * CELL_SIZE
-          hit_y = oy + y * CELL_SIZE
+          hit_x = ox + x * @cs
+          hit_y = oy + y * @cs
           mx = @window.mouse_x
           my = @window.mouse_y
-          hover = mx.between?(hit_x, hit_x + CELL_SIZE - 1) &&
-                  my.between?(hit_y, hit_y + CELL_SIZE - 1)
+          hover = mx.between?(hit_x, hit_x + @cs - 1) &&
+                  my.between?(hit_y, hit_y + @cs - 1)
         end
 
         if is_selected
           @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_SELECTED)
-        elsif is_water && @water_tile
-          scale = cell_inner.to_f / @water_tile.width
-          @water_tile.draw(cx, cy, 1, scale, scale)
-          @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_HOVER) if hover
         else
           color = hover ? CELL_COLOR_HOVER : cell_color(content, show_ships)
           @window.draw_rect(cx, cy, cell_inner, cell_inner, color)
+          draw_miss_x(cx, cy, cell_inner, 5) if content == Board::MISS
+          draw_hit_cell(cx, cy, cell_inner, 5) if content == Board::HIT
         end
       end
+    end
+  end
+
+  # Desenha as sprites dos navios inimigos completamente destruídos sobre o grid.
+  def draw_destroyed_enemy_ships(ox, oy)
+    return unless @ai&.fleet
+    tint = Gosu::Color.new(0xbb_ff9999)
+    @ai.fleet.each do |ship|
+      next unless ship.status == Ship::DESTROYED
+      next if ship.positions.empty? || ship.orientation.nil?
+
+      first_x, first_y = ship.positions.first
+      px = ox + first_x * @cs + 1
+      py = oy + first_y * @cs + 1
+      draw_ship_sprite(ship, px, py, ship.orientation, ship.ship_size,
+                       @cs, CELL_GAP, z: 3, color: tint)
+    end
+  end
+
+  # Desenha uma célula de acerto: fundo de água + contorno vermelho + crosshair.
+  def draw_hit_cell(cx, cy, size, z)
+    # Fundo de água (sem preenchimento vermelho)
+    @window.draw_rect(cx, cy, size, size, CELL_COLOR_WATER, z)
+    # Contorno vermelho
+    t = 1
+    @window.draw_rect(cx,          cy,          size, t,    CELL_COLOR_HIT, z + 1)
+    @window.draw_rect(cx,          cy + size-t, size, t,    CELL_COLOR_HIT, z + 1)
+    @window.draw_rect(cx,          cy,          t,    size, CELL_COLOR_HIT, z + 1)
+    @window.draw_rect(cx + size-t, cy,          t,    size, CELL_COLOR_HIT, z + 1)
+    # Crosshair centralizada
+    if @crosshair_img
+      scale = size.to_f / [@crosshair_img.width, @crosshair_img.height].max
+      ix = cx + (size - @crosshair_img.width  * scale) / 2
+      iy = cy + (size - @crosshair_img.height * scale) / 2
+      @crosshair_img.draw(ix, iy, z + 2, scale, scale)
+    end
+  end
+
+  # --- Pausa ---
+
+  def pause_btn_rect
+    w = 36; h = 28
+    { x: 8, y: 8, w: w, h: h }
+  end
+
+  def draw_pause_button
+    pb = pause_btn_rect
+    hover = @window.mouse_x.between?(pb[:x], pb[:x] + pb[:w]) &&
+            @window.mouse_y.between?(pb[:y], pb[:y] + pb[:h])
+    bg = hover ? Theme::COLOR_HOVER : Gosu::Color.new(0xaa_0d1f35)
+    @window.draw_rect(pb[:x], pb[:y], pb[:w], pb[:h], bg, 5)
+    font = Gosu::Font.new(18)
+    lbl  = "II"
+    font.draw_text(lbl, pb[:x] + (pb[:w] - font.text_width(lbl)) / 2,
+                   pb[:y] + (pb[:h] - font.height) / 2, 6, 1.0, 1.0, Theme::COLOR_ACCENT)
+  end
+
+  def draw_pause_overlay
+    z = 10
+    @window.draw_rect(0, 0, @window.width, @window.height, Gosu::Color.new(0xbb_000000), z)
+
+    scale = @window.width / 800.0
+    box_w = (380 * scale).clamp(340, 520).to_i
+    box_h = (340 * scale).clamp(320, 480).to_i
+    bx    = (@window.width  - box_w) / 2
+    by    = (@window.height - box_h) / 2
+    @window.draw_rect(bx, by, box_w, box_h, Gosu::Color.new(0xee_0d1f35), z + 1)
+    @window.draw_rect(bx, by, box_w, 4, Theme::COLOR_ACCENT, z + 2)
+
+    pad = (18 * scale).to_i
+    title_font = Gosu::Font.new((28 * scale).clamp(24, 38).to_i)
+    tx = bx + (box_w - title_font.text_width("PAUSA")) / 2
+    title_font.draw_text("PAUSA", tx, by + pad, z + 3, 1.0, 1.0, Theme::COLOR_ACCENT)
+
+    btn_w = (box_w * 0.78).to_i
+    btn_h = (42 * scale).clamp(38, 58).to_i
+    btn_x = bx + (box_w - btn_w) / 2
+    gap   = (14 * scale).to_i
+    base_y = by + title_font.height + pad * 2
+
+    music_lbl = @window.music_enabled ? "\u266a Música: LIGADA"  : "\u266a Música: DESLIGADA"
+    sfx_lbl   = @window.sfx_enabled   ? "\u26a1 Efeitos: LIGADOS" : "\u26a1 Efeitos: DESLIGADOS"
+
+    draw_btn_z(music_lbl,  btn_x, base_y,                    btn_w, btn_h, z + 3)
+    draw_btn_z(sfx_lbl,    btn_x, base_y + (btn_h + gap),    btn_w, btn_h, z + 3)
+    draw_btn_z("Continuar",btn_x, base_y + (btn_h + gap) * 2, btn_w, btn_h, z + 3)
+    draw_btn_z("Sair para o Menu", btn_x, base_y + (btn_h + gap) * 3, btn_w, btn_h, z + 3)
+
+    @_pause_rects = {
+      music:    { x: btn_x, y: base_y,                          w: btn_w, h: btn_h },
+      sfx:      { x: btn_x, y: base_y + (btn_h + gap),           w: btn_w, h: btn_h },
+      continue: { x: btn_x, y: base_y + (btn_h + gap) * 2,       w: btn_w, h: btn_h },
+      quit:     { x: btn_x, y: base_y + (btn_h + gap) * 3,       w: btn_w, h: btn_h }
+    }
+  end
+
+  def handle_pause_input(id)
+    return unless id == Gosu::MS_LEFT
+    mx = @window.mouse_x
+    my = @window.mouse_y
+    return unless @_pause_rects
+    @_pause_rects.each do |key, r|
+      next unless mx.between?(r[:x], r[:x] + r[:w]) && my.between?(r[:y], r[:y] + r[:h])
+      case key
+      when :music    then @window.toggle_music
+      when :sfx      then @window.toggle_sfx
+      when :continue then @paused = false
+      when :quit     then @window.request_screen(:menu)
+      end
+    end
+  end
+
+  # Versão de draw_btn com z-index configurável (usada no overlay)
+  def draw_btn_z(text, x, y, w, h, z)
+    mx = @window.mouse_x; my = @window.mouse_y
+    hover = mx.between?(x, x + w) && my.between?(y, y + h)
+    bg    = hover ? Theme::COLOR_HOVER : Theme::COLOR_BTN
+    @window.draw_rect(x, y, w, h, bg, z)
+    t = 2
+    border = hover ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_334155)
+    @window.draw_rect(x, y, w, t, border, z + 1)
+    @window.draw_rect(x, y + h - t, w, t, border, z + 1)
+    @window.draw_rect(x, y, t, h, border, z + 1)
+    @window.draw_rect(x + w - t, y, t, h, border, z + 1)
+    font = @btn_font
+    font.draw_text(text, x + (w - font.text_width(text)) / 2,
+                   y + (h - font.height) / 2, z + 1, 1.0, 1.0, Theme::COLOR_TEXT)
+  end
+
+  # Desenha um X na célula de erro (tiro na água).
+  def draw_miss_x(cx, cy, size, z)
+    pad   = (size * 0.2).to_i
+    thick = [2, (size * 0.08).to_i].max
+    color = Gosu::Color.new(0xff_cbd5e1)
+
+    x1, y1 = cx + pad, cy + pad
+    x2, y2 = cx + size - pad, cy + size - pad
+
+    # diagonal \  (vários retângulos finos sobrepostos simulam uma linha)
+    steps = size - 2 * pad
+    steps.times do |i|
+      @window.draw_rect(x1 + i, y1 + i, thick, thick, color, z)
+    end
+    # diagonal /
+    steps.times do |i|
+      @window.draw_rect(x2 - i - thick, y1 + i, thick, thick, color, z)
     end
   end
 
@@ -516,7 +739,7 @@ class GameScreen < BaseScreen
   def cell_color(content, show_ships)
     case content
     when Board::MISS  then CELL_COLOR_MISS
-    when Board::HIT   then CELL_COLOR_HIT
+    when Board::HIT   then CELL_COLOR_WATER
     when Board::WATER then CELL_COLOR_WATER
     else
       if content.is_a?(Ship)
@@ -538,64 +761,60 @@ class GameScreen < BaseScreen
   # Desenha o painel abaixo dos grids com: turno atual, log de ações,
   # contadores de frota e (se for fase MOVE) o botão de pular + dica.
   def draw_bottom_panel
-    panel_y = BOTTOM_PANEL_Y
+    panel_y = @bpy
     panel_h = @window.height - panel_y
     panel_w = @window.width
 
-    # Fundo escuro do painel
     @window.draw_rect(0, panel_y, panel_w, panel_h, Gosu::Color.new(0xff_0d1f35), 1)
-    # Linha separadora no topo do painel
     @window.draw_rect(0, panel_y, panel_w, 2, Gosu::Color.new(0xff_1e4a7a), 2)
 
-    # ── Coluna esquerda: alinhada com o grid do jogador ──
-    left_x = PLAYER_GRID_X
-    y      = panel_y + 10
+    lh      = @info_font.height + 16
+    pad_top = 16
+
+    # ── Coluna esquerda ──
+    left_x = @pgx
+    y      = panel_y + pad_top
 
     alive = @player.fleet.count { |s| s.status != Ship::DESTROYED }
     @info_font.draw_text("Seus navios vivos: #{alive}/#{@player.fleet.size}",
                          left_x, y, 2, 1.0, 1.0, Theme::COLOR_TEXT)
-    y += 24
+    y += lh
 
-    # Botão Pular + dica (só no modo dinâmico, fase MOVE, vez do jogador)
     if @movement_enabled && !@game_over && @turn_manager&.current_turn == :player && @turn_phase == PHASE_MOVE
       draw_skip_button(left_x, y)
-      y += 42
+      y += @btn_font.height + 16
       if @selected_ship
-        hint = "#{@selected_ship.class.name} selecionado — ↑ ↓ ← → para mover"
-        @info_font.draw_text(hint, left_x, y, 2, 1.0, 1.0, CELL_COLOR_SELECTED)
+        @info_font.draw_text("#{@selected_ship.class.name} selecionado — ↑ ↓ ← → para mover",
+                             left_x, y, 2, 1.0, 1.0, CELL_COLOR_SELECTED)
       else
         @info_font.draw_text("Clique num navio da SUA FROTA para selecionar",
                              left_x, y, 2, 1.0, 1.0, LABEL_COLOR)
       end
     end
 
-    # ── Coluna direita: alinhada com o grid inimigo ──
-    right_x = ENEMY_GRID_X
-    ry      = panel_y + 10
+    # Linha divisora vertical
+    mid_x = @pgx + @lo + 10 * @cs + (@egx - @pgx - @lo - 10 * @cs) / 2
+    @window.draw_rect(mid_x, panel_y + 4, 1, panel_h - 8, Gosu::Color.new(0xff_1e4a7a), 2)
+
+    # ── Coluna direita ──
+    right_x = @egx
+    ry      = panel_y + pad_top
 
     sunk = @ai.fleet.count { |s| s.status == Ship::DESTROYED }
     @info_font.draw_text("Navios inimigos afundados: #{sunk}/#{@ai.fleet.size}",
                          right_x, ry, 2, 1.0, 1.0, Theme::COLOR_TEXT)
-    ry += 24
+    ry += lh
 
     turn_label = @turn_manager&.current_turn == :player ? "◆ Sua vez" : "◆ IA pensando..."
     turn_color = @turn_manager&.current_turn == :player ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_94a3b8)
     @info_font.draw_text(turn_label, right_x, ry, 2, 1.0, 1.0, turn_color)
-    ry += 26
-
-    # ── Log de ações: abaixo de "Sua vez", alinhado à direita ──
-    @info_font.draw_text("Últimas ações:", right_x, ry, 2, 1.0, 1.0, LABEL_COLOR)
-    ry += 20
-    @action_log.last(4).each_with_index do |entry, i|
-      color = (i == @action_log.last(4).size - 1) ? Theme::COLOR_TEXT : Gosu::Color.new(0xff_64748b)
-      @info_font.draw_text("• #{entry}", right_x, ry + i * 20, 2, 1.0, 1.0, color)
-    end
   end
 
   # Botão "Pular [ENTER]" desenhado no painel inferior
   def draw_skip_button(bx, by)
-    bw = 150
-    bh = 34
+    label = "Pular [ENTER]"
+    bw = @btn_font.text_width(label) + 24
+    bh = @btn_font.height + 12
     hover  = over_skip_button_at?(bx, by, bw, bh)
     bg     = hover ? Theme::COLOR_HOVER  : Gosu::Color.new(0xff_14421a)
     border = hover ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_2d6a2d)
@@ -607,7 +826,6 @@ class GameScreen < BaseScreen
     @window.draw_rect(bx,          by,          t,  bh, border, 3)
     @window.draw_rect(bx + bw - t, by,          t,  bh, border, 3)
 
-    label = "Pular [ENTER]"
     tx = bx + (bw - @btn_font.text_width(label)) / 2
     ty = by + (bh - @btn_font.height) / 2
     @btn_font.draw_text(label, tx, ty, 3, 1.0, 1.0, Theme::COLOR_TEXT)
@@ -632,41 +850,44 @@ class GameScreen < BaseScreen
     result_text  = won ? "VITÓRIA!" : "DERROTA"
     result_color = won ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_e53e3e)
 
-    # Caixa central
-    box_w = 500
-    box_h = 280
+    # Caixa central (escala com a resolução)
+    scale = @window.width / 800.0
+    box_w = (500 * scale).clamp(500, 900).to_i
+    box_h = (300 * scale).clamp(300, 540).to_i
     box_x = (@window.width  - box_w) / 2
     box_y = (@window.height - box_h) / 2
     @window.draw_rect(box_x, box_y, box_w, box_h, Gosu::Color.new(0xee_0d1f35), z + 1)
     @window.draw_rect(box_x, box_y, box_w, 4, result_color, z + 2)
 
     # Título
+    pad = (20 * scale).to_i
     tx = box_x + (box_w - @title_font.text_width(result_text)) / 2
-    @title_font.draw_text(result_text, tx, box_y + 20, z + 3, 1.0, 1.0, result_color)
+    @title_font.draw_text(result_text, tx, box_y + pad, z + 3, 1.0, 1.0, result_color)
 
     # Mensagem
     msg = @status_message.to_s
     mx2 = box_x + (box_w - @btn_font.text_width(msg)) / 2
-    @btn_font.draw_text(msg, mx2, box_y + 95, z + 3, 1.0, 1.0, Theme::COLOR_TEXT)
+    @btn_font.draw_text(msg, mx2, box_y + @title_font.height + pad * 2, z + 3, 1.0, 1.0, Theme::COLOR_TEXT)
 
     # Mensagem extra de campanha
+    camp_y = box_y + @title_font.height + @btn_font.height + pad * 3
     if @campaign_stage && won && @campaign_stage < 3
       extra = "Próxima missão desbloqueada!"
       ex = box_x + (box_w - @info_font.text_width(extra)) / 2
-      @info_font.draw_text(extra, ex, box_y + 130, z + 3, 1.0, 1.0, Theme::COLOR_ACCENT)
+      @info_font.draw_text(extra, ex, camp_y, z + 3, 1.0, 1.0, Theme::COLOR_ACCENT)
     elsif @campaign_stage && won && @campaign_stage >= 3
       extra = "Campanha completa! Você é o almirante!"
       ex = box_x + (box_w - @info_font.text_width(extra)) / 2
-      @info_font.draw_text(extra, ex, box_y + 130, z + 3, 1.0, 1.0, Theme::COLOR_ACCENT)
+      @info_font.draw_text(extra, ex, camp_y, z + 3, 1.0, 1.0, Theme::COLOR_ACCENT)
     end
 
     # Botões
-    btn_w = 200
-    btn_h = 44
-    gap   = 30
+    btn_w = (200 * scale).clamp(200, 320).to_i
+    btn_h = (44  * scale).clamp(44,  70).to_i
+    gap   = (30  * scale).clamp(30,  50).to_i
     total = btn_w * 2 + gap
     bx    = (@window.width - total) / 2
-    by    = box_y + box_h - btn_h - 20
+    by    = box_y + box_h - btn_h - (20 * scale).to_i
 
     if @campaign_stage
       draw_btn_z("Voltar à Campanha", bx,            by, btn_w, btn_h, z + 4)
@@ -704,22 +925,29 @@ class GameScreen < BaseScreen
     mx = @window.mouse_x
     my = @window.mouse_y
 
-    btn_w = 200
-    btn_h = 44
-    gap   = 30
+    scale = @window.width / 800.0
+    btn_w = (200 * scale).clamp(200, 320).to_i
+    btn_h = (44  * scale).clamp(44,  70).to_i
+    gap   = (30  * scale).clamp(30,  50).to_i
     total = btn_w * 2 + gap
     bx    = (@window.width - total) / 2
 
-    box_h = 280
+    box_h = (300 * scale).clamp(300, 540).to_i
     box_y = (@window.height - box_h) / 2
-    by    = box_y + box_h - btn_h - 20
+    by    = box_y + box_h - btn_h - (20 * scale).to_i
 
     left_hover  = mx.between?(bx,            bx + btn_w)            && my.between?(by, by + btn_h)
     right_hover = mx.between?(bx + btn_w + gap, bx + btn_w * 2 + gap) && my.between?(by, by + btn_h)
 
     if @campaign_stage
-      @window.request_screen(:campaign) if left_hover
-      @window.request_screen(:menu)     if right_hover
+      if left_hover
+        if @turn_manager.winner == :player
+          @window.on_campaign_mission_won(@campaign_stage)
+        else
+          @window.request_screen(:campaign)
+        end
+      end
+      @window.request_screen(:menu) if right_hover
     else
       @window.request_screen(:dynamic)  if left_hover
       @window.request_screen(:menu)     if right_hover
@@ -736,5 +964,53 @@ class GameScreen < BaseScreen
     newly = @achievement_manager.newly_unlocked.dup
     @achievement_manager.newly_unlocked.clear
     newly.each { |key| @notification.enqueue(key) }
+  end
+
+  # Recomputa o layout somente quando as dimensões da janela mudam.
+  # Garante re-cálculo após a transição para fullscreen.
+  def compute_layout_if_needed
+    return if @last_layout_w == @window.width && @last_layout_h == @window.height
+    compute_layout
+  end
+
+  # Calcula todas as posições e tamanhos a partir das dimensões atuais da janela.
+  # Para 1920×1080: cell_size ≈ 73px   Para 800×600: cell_size ≈ 34px
+  def compute_layout
+    w = @window.width
+    h = @window.height
+
+    # O draw_header desenha o título em y=50 (fonte 50px) e a linha em y=105.
+    # O rótulo "SUA FROTA" fica acima do grid: reservamos espaço a partir de y=115
+    header_h  = 136   # y onde o grid começa (inclui título + linha + margem + rótulo + labels)
+    label_gap = 26    # espaço entre "SUA FROTA" e os labels A-J
+    side_pad  = [w / 60, 8].max
+    gap       = [w / 36, 20].max
+    lbl_off   = [w / 72, 16].max.to_i
+    bottom_h  = [(h * 0.17).to_i, 100].max
+
+    cell_h = (h - header_h - lbl_off - 8 - bottom_h) / 10
+    cell_w = (w - 2 * side_pad - gap - 2 * lbl_off) / 20
+    cs     = [cell_h, cell_w].min.to_i
+
+    grid_px       = 10 * cs
+    total_grids_w = 2 * (lbl_off + grid_px) + gap
+    left_start    = (w - total_grids_w) / 2
+
+    @cs          = cs
+    @lo          = lbl_off
+    @pgx         = left_start
+    @pgy         = header_h
+    @egx         = left_start + lbl_off + grid_px + gap
+    @egy         = header_h
+    @bpy         = header_h + lbl_off + grid_px + 8
+    @label_gap   = label_gap
+
+    scale      = w / 800.0
+    @grid_font = Gosu::Font.new((cs / 2.6).clamp(12, 26).to_i)
+    @info_font = Gosu::Font.new((18 * scale).clamp(16, 28).to_i)
+    @btn_font  = Gosu::Font.new((22 * scale).clamp(20, 34).to_i)
+
+    @last_layout_w = w
+    @last_layout_h = h
   end
 end
