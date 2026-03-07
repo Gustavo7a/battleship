@@ -115,6 +115,15 @@ class TurnManager
     [result, ship, x, y]
   end
 
+  # Encerra o turno do jogador sem que ele atire (usado quando move um navio).
+  # Passa o controle diretamente para a IA.
+  #
+  # @return [void]
+  def end_player_turn_without_shot
+    return if game_over?
+    @current_turn = :ai
+  end
+
   # @return [Boolean] true se alguma das frotas foi totalmente destruída
   def game_over?
     player_defeated? || ai_defeated?

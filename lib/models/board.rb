@@ -95,7 +95,59 @@ class Board
     true
   end
 
+  # Move um navio uma casa na direção indicada.
+  #
+  # Valida se as novas posições estão dentro do tabuleiro e não sobrepõem
+  # outro navio. Navios destruídos não podem ser movidos.
+  #
+  # @param ship [Ship] o navio a ser movido.
+  # @param direction [Symbol] direção do movimento: `:up`, `:down`, `:left` ou `:right`.
+  # @return [Boolean] true se o movimento foi aplicado, false se inválido.
+  #
+  # @example
+  #   board.move_ship(submarine, :right) #=> true
+  def move_ship(ship, direction)
+    return false if ship.status == Ship::DESTROYED
+
+    dx, dy = direction_delta(direction)
+    new_positions = ship.positions.map { |x, y| [x + dx, y + dy] }
+
+    return false unless valid_move?(new_positions, ship)
+
+    # Remove navio das células atuais
+    ship.positions.each { |x, y| @grid[y][x] = WATER }
+
+    # Aplica nas novas células
+    ship.move_to(new_positions)
+    new_positions.each { |x, y| @grid[y][x] = ship }
+
+    true
+  end
+
   private
+
+  # Retorna o delta [dx, dy] para cada direção.
+  # @api private
+  def direction_delta(direction)
+    case direction
+    when :up    then [0, -1]
+    when :down  then [0,  1]
+    when :left  then [-1, 0]
+    when :right then [1,  0]
+    else [0, 0]
+    end
+  end
+
+  # Verifica se as novas posições são válidas para o movimento.
+  # Células que já pertencem ao próprio navio (antes de mover) são permitidas.
+  #
+  # @api private
+  def valid_move?(new_positions, ship)
+    new_positions.all? do |x, y|
+      inside_bounds?(x, y) &&
+        (@grid[y][x] == WATER || ship.positions.include?([x, y]))
+    end
+  end
 
   # Verifica se o navio pode ser colocado na posição desejada.
   #
