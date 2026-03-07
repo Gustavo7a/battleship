@@ -1,10 +1,10 @@
 require_relative 'base_screen'
 
 class MenuScreen < BaseScreen
-  BTN_WIDTH = 280
-  BTN_HEIGHT = 55
-  BTN_SPACING = 75
-  START_Y = 220
+  BTN_WIDTH   = 260
+  BTN_HEIGHT  = 44
+  BTN_SPACING = 58
+  START_Y     = 155
 
   def initialize(window)
     super(window)
@@ -18,11 +18,12 @@ class MenuScreen < BaseScreen
   end
 
   def draw
+    draw_background
 
     if @logo
       scale = 0.5
       img_w = @logo.width * scale
-      x = (@window.width - img_w) / 2
+      x = (@window.dw - img_w) / 2
       @logo.draw(x, -150, 1, scale, scale)
     else
       draw_header("BATALHA NAVAL")
@@ -35,7 +36,7 @@ class MenuScreen < BaseScreen
     draw_menu_btn("OPÇÕES",          4)
     draw_menu_btn("SAIR",            5)
 
-    draw_centered_text("v1.0 - PLP", 580, Gosu::Color.new(0xff_475569), @info_font)
+    draw_centered_text("v1.0 - PLP", 548, Gosu::Color.new(0xff_475569), @info_font)
   end
 
   def button_down(id)
@@ -47,15 +48,15 @@ class MenuScreen < BaseScreen
   private
 
   def draw_menu_btn(text, index)
-    x = (@window.width - BTN_WIDTH) / 2
+    x = (@window.dw - BTN_WIDTH) / 2
     y = START_Y + (index * BTN_SPACING)
     draw_btn(text, x, y, BTN_WIDTH, BTN_HEIGHT)
   end
 
   def handle_clicks
-    x = (@window.width - BTN_WIDTH) / 2
-    mx = @window.mouse_x
-    my = @window.mouse_y
+    x = (@window.dw - BTN_WIDTH) / 2
+    mx = @window.mx
+    my = @window.my
 
     if mx.between?(x, x + BTN_WIDTH)
       index = ((my - START_Y) / BTN_SPACING).to_i
