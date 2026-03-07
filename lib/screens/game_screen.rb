@@ -10,6 +10,7 @@ require_relative '../models/ships/warship'
 require_relative '../models/ships/battleship'
 require_relative '../models/ships/submarine'
 require_relative '../engine/turn_manager'
+require_relative '../engine/movement_mechanics'
 require_relative '../engine/achievement_manager'
 require_relative '../ui/achievement_notification'
 
@@ -34,13 +35,20 @@ class GameScreen < BaseScreen
   CELL_SIZE    = 30
   GRID_MARGIN  = 20
 
+  # Fases do turno do jogador
+  PHASE_MOVE  = :move    # pode mover UM navio INTACTO (opcional) — depois ainda pode atirar
+  PHASE_SHOOT = :shoot   # atira no tabuleiro inimigo
+
   # Origem do grid do INIMIGO (jogador clica aqui para atirar)
   ENEMY_GRID_X = 420
-  ENEMY_GRID_Y = 130
+  ENEMY_GRID_Y = 110
 
   # Origem do grid do JOGADOR (visual de referência)
   PLAYER_GRID_X = 20
-  PLAYER_GRID_Y = 130
+  PLAYER_GRID_Y = 110
+
+  # Y inicial do painel inferior (abaixo dos dois grids)
+  BOTTOM_PANEL_Y = 110 + 16 + 10 * 30 + 6   # GRID_Y + LABEL_OFFSET + grid_height + margem
 
   def initialize(window, current_user: nil, campaign_stage: nil, difficulty: nil,
                  pre_placed_fleet: nil, pre_placed_board: nil)
@@ -57,10 +65,23 @@ class GameScreen < BaseScreen
     @notification = AchievementNotification.new
     @game_start   = Time.now
 
-    @status_message = "Sua vez — clique no tabuleiro do inimigo para atirar!"
+    @status_message = "Selecione um navio para mover (ou pule) e depois atire!"
     @game_over      = false
     @ai_timer       = 0
-    @grid_font      = Gosu::Font.new(11)   # fonte compacta para labels A-J / 1-10
+    @grid_font      = Gosu::Font.new(11)
+
+    # Movimento de navios: disponível APENAS no modo dinâmico (sem campanha)
+    @movement_enabled = @campaign_stage.nil?
+
+    # Fase do turno: começa em MOVE só se o movimento estiver habilitado
+    @turn_phase    = @movement_enabled ? PHASE_MOVE : PHASE_SHOOT
+    @selected_ship = nil
+
+    # Histórico das últimas ações (máx 4 linhas) exibido no painel inferior
+    @action_log     = []
+
+    # Controle interno do turno da IA: :decide -> :move_done ou :shoot
+    @ai_phase       = :decide
 
     # Sprite de água
     begin
@@ -80,10 +101,9 @@ class GameScreen < BaseScreen
     @notification.update
     return if @game_over
 
-    # Turno da IA: aguarda alguns frames para dar sensação de "pensando"
     if @turn_manager.current_turn == :ai
       @ai_timer += 1
-      if @ai_timer >= 40   # ~40 frames de delay (~0.67 s a 60 fps)
+      if @ai_timer >= 40
         @ai_timer = 0
         execute_ai_turn
       end
@@ -93,16 +113,13 @@ class GameScreen < BaseScreen
   def draw
     draw_header(header_title)
 
-    draw_status_bar
     draw_player_grid
     draw_enemy_grid
-    draw_fleet_info
+    draw_bottom_panel
 
     @notification.draw(@window.width)
 
-    if @game_over
-      draw_game_over_overlay
-    end
+    draw_game_over_overlay if @game_over
   end
 
   # Input
@@ -113,8 +130,22 @@ class GameScreen < BaseScreen
       return
     end
 
-    if id == Gosu::MS_LEFT && @turn_manager.current_turn == :player
+    return unless @turn_manager.current_turn == :player
+
+    if id == Gosu::MS_LEFT
       handle_player_click
+    end
+
+    # Teclas de direção: movem o navio selecionado (fase MOVE, só modo dinâmico)
+    if @movement_enabled && @turn_phase == PHASE_MOVE && @selected_ship
+      dir = { Gosu::KB_UP => :up, Gosu::KB_DOWN => :down,
+              Gosu::KB_LEFT => :left, Gosu::KB_RIGHT => :right }[id]
+      apply_movement(dir) if dir
+    end
+
+    # ENTER ou ESPAÇO: pula a fase de movimento (só modo dinâmico)
+    if @movement_enabled && @turn_phase == PHASE_MOVE && (id == Gosu::KB_RETURN || id == Gosu::KB_SPACE)
+      skip_movement
     end
   end
 
@@ -156,7 +187,8 @@ class GameScreen < BaseScreen
     end
 
     @ai.setup_ships
-    @turn_manager = TurnManager.new(@player, @ai)
+    @turn_manager     = TurnManager.new(@player, @ai)
+    @move_mechanics   = MovementMechanics.new(@player.board)
   end
 
   def player_name
@@ -167,7 +199,11 @@ class GameScreen < BaseScreen
     case @difficulty
     when :easy   then EasyBot.new
     when :hard   then HardBot.new
-    else              MediumBot.new   # default e :medium
+    when :medium then MediumBot.new
+    else
+      # Modo dinâmico (sem dificuldade definida): usa HardBot
+      # Campanha sem dificuldade explícita: usa MediumBot como fallback
+      @campaign_stage ? MediumBot.new : HardBot.new
     end
   end
 
@@ -194,11 +230,83 @@ class GameScreen < BaseScreen
 
   # Lógica de turnos
 
-  # Converte clique do mouse em coordenada do grid inimigo e dispara
+  # Roteador principal do clique do jogador: decide se é MOVER ou DISPARAR
   def handle_player_click
     mx = @window.mouse_x
     my = @window.mouse_y
 
+    if @movement_enabled && @turn_phase == PHASE_MOVE
+      handle_move_click(mx, my)
+    else
+      handle_shoot_click(mx, my)
+    end
+  end
+
+  # --- Fase MOVER ---
+
+  # Clique no grid do JOGADOR seleciona um navio; clique no botão "Pular" pula a fase
+  def handle_move_click(mx, my)
+    # Botão "Pular" — posição espelhada do draw_bottom_panel
+    skip_bx = PLAYER_GRID_X
+    skip_by = BOTTOM_PANEL_Y + 10 + 22   # panel_y + 10 (frota) + 22 (linha frota)
+    if over_skip_button_at?(skip_bx, skip_by, 150, 34)
+      skip_movement
+      return
+    end
+
+    # Clique numa célula do grid do jogador → seleciona navio
+    gx = PLAYER_GRID_X + LABEL_OFFSET
+    gy = PLAYER_GRID_Y + LABEL_OFFSET
+    x = ((mx - gx) / CELL_SIZE).to_i
+    y = ((my - gy) / CELL_SIZE).to_i
+
+    return unless @player.board.inside_bounds?(x, y)
+    return if mx < gx || my < gy   # clique na área de label
+
+    content = @player.board.status_at(x, y)
+    if content.is_a?(Ship) && content.status == Ship::INTACT
+      @selected_ship = content
+      log_action("#{content.class.name} selecionado — use ↑↓←→ para mover.")
+    elsif content.is_a?(Ship) && content.status == Ship::DAMAGED
+      log_action("#{content.class.name} já foi acertado e não pode ser movido!")
+    end
+  end
+
+  # Aplica o movimento do navio selecionado na direção dada.
+  # Após mover, o jogador ainda pode atirar neste turno.
+  def apply_movement(direction)
+    result = @move_mechanics.move(@selected_ship, direction)
+    case result
+    when :moved
+      log_action("Você moveu #{@selected_ship.class.name}. Agora atire!")
+      @selected_ship = nil
+      @turn_phase    = PHASE_SHOOT
+    when :out_of_bounds
+      log_action("Movimento inválido — fora do tabuleiro!")
+    when :collision
+      log_action("Movimento inválido — outro navio no caminho!")
+    when :damaged_ship
+      log_action("Não pode mover — navio já foi acertado!")
+    when :already_destroyed
+      log_action("Este navio foi destruído!")
+    when :already_moved
+      log_action("Você já moveu um navio neste turno!")
+    else
+      log_action("Movimento inválido.")
+    end
+  end
+
+  # Pula a fase de movimento e vai direto para o disparo
+  def skip_movement
+    @selected_ship  = nil
+    @turn_phase     = PHASE_SHOOT
+    log_action("Movimento pulado — clique no tabuleiro inimigo para atirar.")
+  end
+
+  # --- Fase DISPARAR ---
+
+  # Converte clique do mouse em coordenada do grid inimigo e dispara
+  def handle_shoot_click(mx, my)
     # Origem real do grid = ENEMY_GRID + LABEL_OFFSET
     grid_ox = ENEMY_GRID_X + LABEL_OFFSET
     grid_oy = ENEMY_GRID_Y + LABEL_OFFSET
@@ -207,43 +315,69 @@ class GameScreen < BaseScreen
     y = ((my - grid_oy) / CELL_SIZE).to_i
 
     return unless @ai.board.inside_bounds?(x, y)
+    return if mx < grid_ox || my < grid_oy   # clique na área de label
 
     result = @turn_manager.player_shoot(x, y)
 
     case result
     when :REPEATED, :INVALID
-      @status_message = "Já atirou aqui! Escolha outra célula."
+      log_action("Já atirou aqui! Escolha outra célula.")
     when :WATER
-      @status_message = "Água! Vez da IA..."
+      log_action("Você atirou em (#{x + 1}, #{y + 1}) — Água! Vez da IA.")
+      start_player_turn
     when :DAMAGED
       ship = @turn_manager.last_ship
-      @status_message = "Acertou! #{ship&.class&.name} danificado. Atire de novo!"
+      log_action("Você acertou #{ship&.class&.name}! Atire de novo.")
       register_shot(result, ship)
     when :DESTROYED
       ship = @turn_manager.last_ship
-      @status_message = "#{ship&.class&.name} DESTRUÍDO! Atire de novo!"
+      log_action("Você DESTRUIU #{ship&.class&.name}! Atire de novo.")
       register_shot(result, ship)
     end
 
     check_game_over
   end
 
-  # Executa o turno da IA e atualiza mensagem de status
-  def execute_ai_turn
-    result, ship, x, y = @turn_manager.ai_turn
+  # Reinicia as variáveis de movimento para um novo turno do jogador
+  def start_player_turn
+    @turn_phase    = @movement_enabled ? PHASE_MOVE : PHASE_SHOOT
+    @selected_ship = nil
+    @move_mechanics.new_turn if @movement_enabled
+  end
 
-    coord_str = x && y ? "(#{x}, #{y})" : "?"
+  # Executa o turno da IA em duas fases com timer separado:
+  #   :decide — (só modo dinâmico) tenta mover um navio. Depois passa para :shoot.
+  #   :shoot  — dispara.
+  def execute_ai_turn
+    if @ai_phase == :decide
+      if @movement_enabled
+        @ai.new_turn
+        log_action("IA moveu um navio.") if @ai.try_move_ship
+      end
+      @ai_phase = :shoot
+      return   # aguarda próximo tick do timer para atirar
+    end
+
+    # Fase :shoot — IA atira
+    @ai_phase = :decide   # reset para o próximo turno
+
+    result, ship, x, y = @turn_manager.ai_turn
+    coord_str = x && y ? "(#{x + 1}, #{y + 1})" : "?"
 
     case result
     when :WATER
-      @status_message = "IA atirou em #{coord_str} — Água! Sua vez."
+      log_action("IA atirou em #{coord_str} — Água!")
+      start_player_turn
     when :DAMAGED
-      @status_message = "IA atirou em #{coord_str} — ACERTOU! IA atira de novo..."
+      log_action("IA atirou em #{coord_str} — Acertou #{ship&.class&.name}!")
     when :DESTROYED
-      @status_message = "IA atirou em #{coord_str} — #{ship&.class&.name} DESTRUÍDO! IA atira de novo..."
+      log_action("IA DESTRUIU #{ship&.class&.name}!")
+      start_player_turn if @turn_manager.current_turn == :player
     when :GAME_OVER
       check_game_over
       return
+    else
+      start_player_turn
     end
 
     check_game_over
@@ -280,6 +414,7 @@ class GameScreen < BaseScreen
   CELL_COLOR_SHIP      = Gosu::Color.new(0xff_2b6cb0)
   CELL_COLOR_DESTROYED = Gosu::Color.new(0xff_742a2a)
   CELL_COLOR_HOVER     = Gosu::Color.new(0x88_ffd700)
+  CELL_COLOR_SELECTED  = Gosu::Color.new(0xff_00e5ff)   # ciano — navio selecionado para mover
   CELL_GRID_COLOR      = Gosu::Color.new(0xff_0a1628)
   CELL_GAP             = 2
   LABEL_COLOR          = Gosu::Color.new(0xff_94a3b8)
@@ -338,9 +473,13 @@ class GameScreen < BaseScreen
         content  = board.status_at(x, y)
         is_water = water_cell?(content, show_ships)
 
+        # Navio selecionado para mover: destaque ciano (só modo dinâmico)
+        is_selected = @movement_enabled && !interactive && @selected_ship &&
+                      content.is_a?(Ship) && content.equal?(@selected_ship)
+
         # Hover no grid inimigo (somente células ainda não atiradas)
         hover = false
-        if interactive && !@game_over && @turn_manager.current_turn == :player
+        if interactive && !@game_over && @turn_manager.current_turn == :player && @turn_phase == PHASE_SHOOT
           hit_x = ox + x * CELL_SIZE
           hit_y = oy + y * CELL_SIZE
           mx = @window.mouse_x
@@ -349,15 +488,13 @@ class GameScreen < BaseScreen
                   my.between?(hit_y, hit_y + CELL_SIZE - 1)
         end
 
-        if is_water && @water_tile
-          # Recorta o tile de água para o tamanho da célula usando draw com subimagem
-          # Usa scale para ajustar o tile
+        if is_selected
+          @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_SELECTED)
+        elsif is_water && @water_tile
           scale = cell_inner.to_f / @water_tile.width
           @water_tile.draw(cx, cy, 1, scale, scale)
-          # Overlay de hover dourado por cima do tile
           @window.draw_rect(cx, cy, cell_inner, cell_inner, CELL_COLOR_HOVER) if hover
         else
-          # Células de navio, acerto, erro ou fallback sem sprite
           color = hover ? CELL_COLOR_HOVER : cell_color(content, show_ships)
           @window.draw_rect(cx, cy, cell_inner, cell_inner, color)
         end
@@ -396,26 +533,90 @@ class GameScreen < BaseScreen
     end
   end
 
-  # Status bar
-  def draw_status_bar
-    bar_y = 95
-    @window.draw_rect(0, bar_y, @window.width, 28, Gosu::Color.new(0xff_1a202c))
-    @info_font.draw_text(@status_message.to_s, 10, bar_y + 5, 2, 1.0, 1.0, Theme::COLOR_TEXT)
+  # ── Painel Inferior Unificado ──────────────────────────────────────────────
 
-    turn_text = @turn_manager ? "Vez: #{@turn_manager.current_turn == :player ? 'JOGADOR' : 'IA'}" : ""
-    tw = @info_font.text_width(turn_text)
-    @info_font.draw_text(turn_text, @window.width - tw - 10, bar_y + 5, 2, 1.0, 1.0, Theme::COLOR_ACCENT)
+  # Desenha o painel abaixo dos grids com: turno atual, log de ações,
+  # contadores de frota e (se for fase MOVE) o botão de pular + dica.
+  def draw_bottom_panel
+    panel_y = BOTTOM_PANEL_Y
+    panel_h = @window.height - panel_y
+    panel_w = @window.width
+
+    # Fundo escuro do painel
+    @window.draw_rect(0, panel_y, panel_w, panel_h, Gosu::Color.new(0xff_0d1f35), 1)
+    # Linha separadora no topo do painel
+    @window.draw_rect(0, panel_y, panel_w, 2, Gosu::Color.new(0xff_1e4a7a), 2)
+
+    # ── Coluna esquerda: alinhada com o grid do jogador ──
+    left_x = PLAYER_GRID_X
+    y      = panel_y + 10
+
+    alive = @player.fleet.count { |s| s.status != Ship::DESTROYED }
+    @info_font.draw_text("Seus navios vivos: #{alive}/#{@player.fleet.size}",
+                         left_x, y, 2, 1.0, 1.0, Theme::COLOR_TEXT)
+    y += 24
+
+    # Botão Pular + dica (só no modo dinâmico, fase MOVE, vez do jogador)
+    if @movement_enabled && !@game_over && @turn_manager&.current_turn == :player && @turn_phase == PHASE_MOVE
+      draw_skip_button(left_x, y)
+      y += 42
+      if @selected_ship
+        hint = "#{@selected_ship.class.name} selecionado — ↑ ↓ ← → para mover"
+        @info_font.draw_text(hint, left_x, y, 2, 1.0, 1.0, CELL_COLOR_SELECTED)
+      else
+        @info_font.draw_text("Clique num navio da SUA FROTA para selecionar",
+                             left_x, y, 2, 1.0, 1.0, LABEL_COLOR)
+      end
+    end
+
+    # ── Coluna direita: alinhada com o grid inimigo ──
+    right_x = ENEMY_GRID_X
+    ry      = panel_y + 10
+
+    sunk = @ai.fleet.count { |s| s.status == Ship::DESTROYED }
+    @info_font.draw_text("Navios inimigos afundados: #{sunk}/#{@ai.fleet.size}",
+                         right_x, ry, 2, 1.0, 1.0, Theme::COLOR_TEXT)
+    ry += 24
+
+    turn_label = @turn_manager&.current_turn == :player ? "◆ Sua vez" : "◆ IA pensando..."
+    turn_color = @turn_manager&.current_turn == :player ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_94a3b8)
+    @info_font.draw_text(turn_label, right_x, ry, 2, 1.0, 1.0, turn_color)
+    ry += 26
+
+    # ── Log de ações: abaixo de "Sua vez", alinhado à direita ──
+    @info_font.draw_text("Últimas ações:", right_x, ry, 2, 1.0, 1.0, LABEL_COLOR)
+    ry += 20
+    @action_log.last(4).each_with_index do |entry, i|
+      color = (i == @action_log.last(4).size - 1) ? Theme::COLOR_TEXT : Gosu::Color.new(0xff_64748b)
+      @info_font.draw_text("• #{entry}", right_x, ry + i * 20, 2, 1.0, 1.0, color)
+    end
   end
 
-  # Informações de frota
+  # Botão "Pular [ENTER]" desenhado no painel inferior
+  def draw_skip_button(bx, by)
+    bw = 150
+    bh = 34
+    hover  = over_skip_button_at?(bx, by, bw, bh)
+    bg     = hover ? Theme::COLOR_HOVER  : Gosu::Color.new(0xff_14421a)
+    border = hover ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_2d6a2d)
+    t = 2
 
-  def draw_fleet_info
-    base_y = PLAYER_GRID_Y + LABEL_OFFSET + 10 * CELL_SIZE + 8
-    alive  = @player.fleet.count { |s| s.status != Ship::DESTROYED }
-    sunk   = @ai.fleet.count    { |s| s.status == Ship::DESTROYED }
+    @window.draw_rect(bx, by, bw, bh, bg, 2)
+    @window.draw_rect(bx,          by,          bw, t, border, 3)
+    @window.draw_rect(bx,          by + bh - t, bw, t, border, 3)
+    @window.draw_rect(bx,          by,          t,  bh, border, 3)
+    @window.draw_rect(bx + bw - t, by,          t,  bh, border, 3)
 
-    @info_font.draw_text("Seus navios vivos: #{alive}/#{@player.fleet.size}", PLAYER_GRID_X, base_y, 2, 1.0, 1.0, Theme::COLOR_TEXT)
-    @info_font.draw_text("Navios inimigos afundados: #{sunk}/#{@ai.fleet.size}", ENEMY_GRID_X, base_y, 2, 1.0, 1.0, Theme::COLOR_TEXT)
+    label = "Pular [ENTER]"
+    tx = bx + (bw - @btn_font.text_width(label)) / 2
+    ty = by + (bh - @btn_font.height) / 2
+    @btn_font.draw_text(label, tx, ty, 3, 1.0, 1.0, Theme::COLOR_TEXT)
+  end
+
+  def over_skip_button_at?(bx, by, bw, bh)
+    mx = @window.mouse_x
+    my = @window.mouse_y
+    mx.between?(bx, bx + bw) && my.between?(by, by + bh)
   end
 
   # Game Over
@@ -523,6 +724,12 @@ class GameScreen < BaseScreen
       @window.request_screen(:dynamic)  if left_hover
       @window.request_screen(:menu)     if right_hover
     end
+  end
+
+  # Registra uma ação no log do painel inferior (máx 8 entradas)
+  def log_action(msg)
+    @action_log << msg
+    @action_log.shift if @action_log.size > 8
   end
 
   def flush_notifications

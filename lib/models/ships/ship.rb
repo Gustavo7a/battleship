@@ -42,4 +42,12 @@ class Ship
     end
   end
 
+  # Atualiza as posições do navio após um movimento válido.
+  #
+  # @param new_positions [Array<Array(Integer, Integer)>] nova lista de coordenadas [x, y].
+  # @return [void]
+  def move_to(new_positions)
+    @positions = new_positions.dup
+  end
+
 end

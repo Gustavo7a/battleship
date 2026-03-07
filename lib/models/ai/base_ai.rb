@@ -3,6 +3,7 @@ require_relative '../ships/submarine'
 require_relative '../ships/warship'
 require_relative '../ships/flattop'
 require_relative '../ships/battleship'
+require File.expand_path('../../engine/movement_mechanics', __dir__)
 
 # Classe base para controlar o posicionamento aleatório dos navios das IAs no tabuleiro.
 #
@@ -33,6 +34,20 @@ class BaseAI
       Battleship.new,
       Submarine.new
     ]
+    @move_mechanics = MovementMechanics.new(@board)
+  end
+
+  # Libera o movimento para o próximo turno da IA.
+  # @return [void]
+  def new_turn
+    @move_mechanics.new_turn
+  end
+
+  # Tenta mover um navio intacto aleatoriamente (50% de chance de tentar).
+  # @return [Boolean] true se um navio foi movido
+  def try_move_ship
+    return false if rand > 0.5   # metade das vezes a IA opta por não mover
+    @move_mechanics.move_random(@fleet)
   end
 
   # Posiciona toda a frota da IA no tabuleiro de forma aleatória.
