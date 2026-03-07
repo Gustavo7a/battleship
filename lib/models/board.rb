@@ -79,6 +79,7 @@ class Board
   def place_ship(ship, x, y, orientation)
     return false unless valid_position?(ship, x, y, orientation)
 
+    ship.orientation = orientation
     size = ship.ship_size
 
     if orientation == :horizontal

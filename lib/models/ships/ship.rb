@@ -7,7 +7,8 @@ class Ship
   # @return [Array<Array(Integer, Integer)>] lista de coordenadas [x, y] ocupadas.
   # @return [Integer] quantidade de acertos recebidos.
   # @return [Symbol] estado atual (:Intact, :Damaged ou :Destroyed).
-  attr_accessor :ship_size, :positions, :hits, :status
+  # @return [Symbol, nil] orientação do navio no tabuleiro (:horizontal ou :vertical).
+  attr_accessor :ship_size, :positions, :hits, :status, :orientation
 
   # @group Estados do Navio
 
@@ -28,6 +29,7 @@ class Ship
     @positions = []
     @hits = 0
     @status = INTACT
+    @orientation = nil
   end
 
   # Registra um acerto no navio e atualiza seu status de integridade.
