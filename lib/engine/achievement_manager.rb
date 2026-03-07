@@ -1,4 +1,5 @@
 require 'json'
+require_relative '../models/ships/ship'
 
 # Gerencia o sistema de conquistas (medalhas) do jogo.
 #
@@ -41,7 +42,9 @@ class AchievementManager
 
   attr_reader :unlocked_achievements, :consecutive_hits, :ship_types_hit_streak
 
-  def initialize
+  # @param user_id [Integer, String, nil] ID do usuário. Nil usa a chave 'guest'.
+  def initialize(user_id: nil)
+    @user_id                  = user_id ? user_id.to_s : 'guest'
     @unlocked_achievements    = []
     @consecutive_hits         = 0
     @ship_types_hit_streak    = []   # tipos de navios acertados em sequência
@@ -116,7 +119,7 @@ class AchievementManager
 
   # Almirante: vencer sem perder nenhum navio.
   def check_almirante(player_fleet)
-    all_intact = player_fleet.none? { |ship| ship.status == :Destroyed }
+    all_intact = player_fleet.none? { |ship| ship.status == Ship::DESTROYED }
     unlock(:almirante) if all_intact
   end
 
@@ -147,19 +150,24 @@ class AchievementManager
   # --- Persistência ---
 
   def save_achievements
-    data = { unlocked: @unlocked_achievements.map(&:to_s) }
+    raw  = File.exist?(SAVE_FILE) ? File.read(SAVE_FILE) : ''
+    data = raw.strip.empty? ? {} : JSON.parse(raw)
+    data[@user_id] = @unlocked_achievements.map(&:to_s)
     File.write(SAVE_FILE, JSON.generate(data))
   rescue => e
-    warn "AchievementManager: falha ao salvar conquistas – #{e.message}"
+    warn "AchievementManager: falha ao salvar conquistas \u2013 #{e.message}"
   end
 
   def load_achievements
     @newly_unlocked = []
     return unless File.exist?(SAVE_FILE)
-    data = JSON.parse(File.read(SAVE_FILE))
-    @unlocked_achievements = data['unlocked'].map(&:to_sym)
+    raw = File.read(SAVE_FILE)
+    return if raw.strip.empty?
+    data = JSON.parse(raw)
+    user_data = data[@user_id] || []
+    @unlocked_achievements = user_data.map(&:to_sym)
   rescue => e
-    warn "AchievementManager: falha ao carregar conquistas – #{e.message}"
+    warn "AchievementManager: falha ao carregar conquistas \u2013 #{e.message}"
     @unlocked_achievements = []
   end
 end
