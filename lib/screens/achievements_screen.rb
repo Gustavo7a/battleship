@@ -24,6 +24,7 @@ class AchievementsScreen < BaseScreen
 
   def draw
     draw_header("CONQUISTAS")
+    draw_back_btn
 
     AchievementManager::ACHIEVEMENTS.each_with_index do |(key, data), i|
       draw_achievement_card(key, data, CARD_X, START_Y + i * CARD_SPACING)
@@ -34,8 +35,11 @@ class AchievementsScreen < BaseScreen
     unlocked = @am.unlocked_achievements.size
     summary  = "#{unlocked} / #{total} conquistas desbloqueadas"
     draw_centered_text(summary, 530, Theme::COLOR_ACCENT, @info_font)
+  end
 
-    draw_footer_hint
+  def button_down(id)
+    return unless id == Gosu::MS_LEFT
+    @window.request_screen(:menu) if back_btn_hit?(@window.mx, @window.my)
   end
 
   private

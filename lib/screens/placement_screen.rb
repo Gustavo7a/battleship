@@ -65,15 +65,7 @@ class PlacementScreen < BaseScreen
     @sub_font    = Gosu::Font.new(15)
     @btn_font2   = Gosu::Font.new(22)
 
-    # Sprite de água para as células
-    begin
-      @water_tile = Gosu::Image.new(
-        File.join("assets", "images", "agua.png"),
-        tileable: true
-      )
-    rescue
-      @water_tile = nil
-    end
+    load_ship_sprites
 
     # Estado de drag
     @dragging_ship  = nil   # navio sendo arrastado
@@ -90,7 +82,7 @@ class PlacementScreen < BaseScreen
   def update
     # Atualiza posição de preview durante drag
     if @dragging_ship
-      col, row = pixel_to_cell(@window.mouse_x, @window.mouse_y)
+      col, row = pixel_to_cell(@window.mx, @window.my)
       @drag_col = col - @drag_offset_x
       @drag_row = row - @drag_offset_y
     end
@@ -124,8 +116,8 @@ class PlacementScreen < BaseScreen
   private
 
   def handle_left_press
-    mx = @window.mouse_x
-    my = @window.mouse_y
+    mx = @window.mx
+    my = @window.my
 
     # Botão EMBARALHAR
     if over_button?(mx, my, :shuffle)
@@ -159,8 +151,8 @@ class PlacementScreen < BaseScreen
     ship = @dragging_ship
     @dragging_ship = nil
 
-    mx = @window.mouse_x
-    my = @window.mouse_y
+    mx = @window.mx
+    my = @window.my
     moved = (mx - @drag_start_x).abs > 5 || (my - @drag_start_y).abs > 5
 
     if moved
@@ -352,12 +344,7 @@ class PlacementScreen < BaseScreen
       10.times do |col|
         cx = gx + col * CELL_SIZE + 1
         cy = gy + row * CELL_SIZE + 1
-        if @water_tile
-          scale = cell_inner.to_f / @water_tile.width
-          @water_tile.draw(cx, cy, 1, scale, scale)
-        else
-          @window.draw_rect(cx, cy, cell_inner, cell_inner, COLOR_WATER)
-        end
+        @window.draw_rect(cx, cy, cell_inner, cell_inner, COLOR_WATER)
       end
     end
   end
@@ -392,19 +379,13 @@ class PlacementScreen < BaseScreen
       ori  = entry[:orientation]
       size = ship.ship_size
 
-      if ori == :horizontal
-        px, py = cell_to_pixel(col, row)
-        w = size * CELL_SIZE - CELL_GAP
-        h = cell_inner
-        @window.draw_rect(px, py, w, h, COLOR_SHIP)
-        draw_ship_label(ship, px, py, w, h)
-      else
-        px, py = cell_to_pixel(col, row)
-        w = cell_inner
-        h = size * CELL_SIZE - CELL_GAP
-        @window.draw_rect(px, py, w, h, COLOR_SHIP)
-        draw_ship_label(ship, px, py, w, h)
-      end
+      px, py = cell_to_pixel(col, row)
+      w = ori == :horizontal ? size * CELL_SIZE - CELL_GAP : cell_inner
+      h = ori == :horizontal ? cell_inner : size * CELL_SIZE - CELL_GAP
+
+      # Fundo sólido como fallback caso a sprite não carregue
+      @window.draw_rect(px, py, w, h, COLOR_SHIP, 1)
+      draw_ship_sprite(ship, px, py, ori, size, CELL_SIZE, CELL_GAP, z: 2)
     end
   end
 
@@ -435,22 +416,20 @@ class PlacementScreen < BaseScreen
     cell_inner = CELL_SIZE - CELL_GAP
 
     valid = can_place?(@temp_board, ship, @drag_col, @drag_row, ori, exclude: ship)
-    color = valid ? COLOR_SHIP_OK : COLOR_SHIP_INVA
+    color_bg     = valid ? COLOR_SHIP_OK : COLOR_SHIP_INVA
+    sprite_tint  = valid ? Gosu::Color.new(0xcc_ffffff) : Gosu::Color.new(0x99_ffffff)
 
-    if ori == :horizontal
-      px, py = cell_to_pixel(@drag_col, @drag_row)
-      w = size * CELL_SIZE - CELL_GAP
-      @window.draw_rect(px, py, w, cell_inner, color)
-    else
-      px, py = cell_to_pixel(@drag_col, @drag_row)
-      h = size * CELL_SIZE - CELL_GAP
-      @window.draw_rect(px, py, cell_inner, h, color)
-    end
+    px, py = cell_to_pixel(@drag_col, @drag_row)
+    w = ori == :horizontal ? size * CELL_SIZE - CELL_GAP : cell_inner
+    h = ori == :horizontal ? cell_inner : size * CELL_SIZE - CELL_GAP
+
+    @window.draw_rect(px, py, w, h, color_bg, 2)
+    draw_ship_sprite(ship, px, py, ori, size, CELL_SIZE, CELL_GAP, z: 3, color: sprite_tint)
   end
 
   def draw_buttons
     total = BTN_W * 2 + BTN_GAP
-    bx    = (@window.width - total) / 2
+    bx    = (@window.dw - total) / 2
 
     draw_colored_btn("EMBARALHAR", bx,            BTN_Y, BTN_W, BTN_H, :shuffle)
     draw_colored_btn("JOGAR",      bx + BTN_W + BTN_GAP, BTN_Y, BTN_W, BTN_H, :play)
@@ -458,8 +437,8 @@ class PlacementScreen < BaseScreen
 
   # Botão colorido com estilo destacado (sem depender do draw_btn do BaseScreen)
   def draw_colored_btn(text, x, y, w, h, type)
-    mx = @window.mouse_x
-    my = @window.mouse_y
+    mx = @window.mx
+    my = @window.my
     hover = mx.between?(x, x + w) && my.between?(y, y + h)
 
     bg = case type
@@ -481,7 +460,7 @@ class PlacementScreen < BaseScreen
 
   def over_button?(mx, my, which)
     total = BTN_W * 2 + BTN_GAP
-    bx    = (@window.width - total) / 2
+    bx    = (@window.dw - total) / 2
 
     case which
     when :shuffle

@@ -17,9 +17,9 @@ class RankingScreen < BaseScreen
 
   def draw
     draw_header("HALL DA FAMA")
+    draw_back_btn
     draw_column_headers
     draw_rows
-    draw_footer_hint
   end
 
   private
@@ -76,5 +76,10 @@ class RankingScreen < BaseScreen
 
   COLOR_SUCCESS = Gosu::Color.new(0xff_22c55e)
   COLOR_ERROR   = Gosu::Color.new(0xff_ef4444)
+
+  def button_down(id)
+    return unless id == Gosu::MS_LEFT
+    @window.request_screen(:menu) if back_btn_hit?(@window.mx, @window.my)
+  end
 end
 

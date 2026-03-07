@@ -32,17 +32,19 @@ class CampaignScreen < BaseScreen
     super(window)
     @stage        = stage.clamp(1, 3)
     @hover_stage  = nil
+    @mission_font = Gosu::Font.new(16)
   end
 
   # Renderização
 
   def draw
     draw_header("MAPA DE CAMPANHA")
+    draw_back_btn
     draw_centered_text("Selecione sua missão:", 140, Theme::COLOR_TEXT, @btn_font)
 
     btn_w  = 420
     btn_h  = 50
-    start_x = (@window.width - btn_w) / 2
+    start_x = (@window.dw - btn_w) / 2
 
     STAGE_LABELS.each_with_index do |(stage_num, label), idx|
       y       = 200 + idx * 80
@@ -51,7 +53,6 @@ class CampaignScreen < BaseScreen
     end
 
     draw_stage_info
-    draw_footer_hint
   end
 
   # Input
@@ -59,11 +60,17 @@ class CampaignScreen < BaseScreen
   def button_down(id)
     return unless id == Gosu::MS_LEFT
 
-    mx = @window.mouse_x
-    my = @window.mouse_y
-    btn_w  = 420
+    mx = @window.mx
+    my = @window.my
+
+    if back_btn_hit?(mx, my)
+      @window.request_screen(:menu)
+      return
+    end
+
+    btn_w  = 500
     btn_h  = 50
-    start_x = (@window.width - btn_w) / 2
+    start_x = (@window.dw - btn_w) / 2
 
     STAGE_LABELS.each_with_index do |(stage_num, _label), idx|
       y        = 200 + idx * 80
@@ -80,8 +87,8 @@ class CampaignScreen < BaseScreen
 
   # Desenha um botão de missão, bloqueado ou não.
   def draw_mission_btn(label, x, y, w, h, unlocked)
-    mx = @window.mouse_x
-    my = @window.mouse_y
+    mx = @window.mx
+    my = @window.my
     is_hover = unlocked && mx.between?(x, x + w) && my.between?(y, y + h)
 
     bg_color     = unlocked ? (is_hover ? Theme::COLOR_HOVER : Theme::COLOR_BTN) : Gosu::Color.new(0xff_2d3748)
@@ -96,9 +103,9 @@ class CampaignScreen < BaseScreen
     @window.draw_rect(x + w - t, y,         t, h, border_color)
 
     display = unlocked ? label : "#{label}  [BLOQUEADA]"
-    tx = x + (w - @btn_font.text_width(display)) / 2
-    ty = y + (h - @btn_font.height) / 2
-    @btn_font.draw_text(display, tx, ty, 2, 1.0, 1.0, text_color)
+    tx = x + (w - @mission_font.text_width(display)) / 2
+    ty = y + (h - @mission_font.height) / 2
+    @mission_font.draw_text(display, tx, ty, 2, 1.0, 1.0, text_color)
   end
 
   # Exibe o estágio atual em texto informativo
