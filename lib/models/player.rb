@@ -41,7 +41,7 @@ class Player
   # ou iniciar uma nova partida.
   def reset_board
     @board = Board.new
-    @fleet = buid_fleet
+    @fleet = build_fleet
     @shooter = ShootingMechanics.new(@board)
   end
 
@@ -51,7 +51,7 @@ class Player
   #   # * 1 Battleship (Encouraçado).
   #   # * 1 Submarine (Submarino).
   private
-  def buid_fleet
+  def build_fleet
     [
       Flattop.new,
       Flattop.new,
