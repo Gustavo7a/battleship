@@ -21,30 +21,26 @@ class ShootingMechanics
   # @param x [Integer] coordenada horizontal
   # @param y [Integer] coordenada vertical
   #
-  # @return [Symbol] resultado do disparo:
-  # - :WATER -> tiro na água
-  # - :DAMAGED -> navio atingido, mas não destruído
-  # - :DESTROYED -> navio destruído
-  # - :REPEATED -> posição já atingida
-  # - :INVALID -> posição fora do tabuleiro
+  # @return [Array(Symbol, Ship|nil)] par [resultado, navio_atingido]:
+  # - resultado: :WATER, :DAMAGED, :DESTROYED, :REPEATED ou :INVALID
+  # - navio_atingido: objeto Ship se houve acerto, nil caso contrário
   def shoot(x, y)
-    return :INVALID unless @board.inside_bounds?(x, y)
+    return [:INVALID, nil] unless @board.inside_bounds?(x, y)
     content = @board.status_at(x, y)
-    return :REPEATED if content == Board::HIT or content == Board::MISS
-
+    return [:REPEATED, nil] if content == Board::HIT or content == Board::MISS
 
     if content.is_a?(Ship)
       ship = content
       ship.receive_hit
       @board.set_status(x, y, Board::HIT)
       if ship.status == Ship::DESTROYED
-        return :DESTROYED
+        return [:DESTROYED, ship]
       else
-        return :DAMAGED
+        return [:DAMAGED, ship]
       end
     else
       @board.set_status(x, y, Board::MISS)
-      return :WATER
+      [:WATER, nil]
     end
   end
 end

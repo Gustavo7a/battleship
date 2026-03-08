@@ -24,8 +24,9 @@ class EasyBot < BaseAI
       x = rand(10).to_i
       y = rand(10).to_i
 
-      if opponent_board.status_at(x, y) != :HIT and opponent_board.status_at(x, y) != :MISS
-        return [x,y]
+      status = opponent_board.status_at(x, y)
+      if status != Board::HIT && status != Board::MISS
+        return [x, y]
       end
     end
   end

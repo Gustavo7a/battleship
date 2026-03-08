@@ -25,7 +25,7 @@ class Player
   # Realiza um disparo em uma posição do tabuleiro adversário.
   # @param x [Integer] coordenada horizontal
   # @param y [Integer] coordenada vertical
-  # @return [Symbol] resultado do disparo (:WATER, :DAMAGED, etc.)
+  # @return [Array(Symbol, Ship|nil)] [resultado, navio_atingido]
   def shoot(x, y)
     @shooter.shoot(x, y)
   end
@@ -37,11 +37,18 @@ class Player
   end
 
   # Reseta o tabuleiro e a frota de navios do jogador.
-  # Usado, por exemplo, ao avançar para uma nova fase
-  # ou iniciar uma nova partida.
   def reset_board
     @board = Board.new
-    @fleet = buid_fleet
+    @fleet = build_fleet
+    @shooter = ShootingMechanics.new(@board)
+  end
+
+  # Usa uma frota e board pré-posicionados vindos da PlacementScreen.
+  # @param fleet [Array<Ship>] navios já posicionados
+  # @param board [Board] tabuleiro já montado
+  def use_pre_placed(fleet, board)
+    @fleet   = fleet
+    @board   = board
     @shooter = ShootingMechanics.new(@board)
   end
 
@@ -51,7 +58,7 @@ class Player
   #   # * 1 Battleship (Encouraçado).
   #   # * 1 Submarine (Submarino).
   private
-  def buid_fleet
+  def build_fleet
     [
       Flattop.new,
       Flattop.new,
