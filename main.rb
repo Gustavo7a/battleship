@@ -9,6 +9,8 @@ require_relative 'lib/screens/ranking_screen'
 require_relative 'lib/screens/options_screen'
 require_relative 'lib/screens/campaign_screen'
 require_relative 'lib/screens/achievements_screen'
+require_relative 'lib/screens/congratulations_screen'
+require_relative 'lib/screens/davy_jones_defeat_screen'
 require_relative 'lib/engine/achievement_manager'
 require_relative 'lib/ui/achievement_notification'
 require_relative 'lib/database/database_manager'
@@ -111,16 +113,17 @@ class GameWindow < Gosu::Window
   end
 
   def on_campaign_mission_won(stage)
-    @campaign_stage = [stage + 1, 4].min
+    @campaign_stage = [stage + 1, 5].min
     @db.set_campaign_stage(@current_user['id'], @campaign_stage) if @current_user
-    @pending_screen = :campaign
+    # Missão 4 (Davy Jones): tela de parabenização especial
+    @pending_screen = stage == 4 ? :congratulations : :campaign
   end
 
   def show_screen(screen_symbol)
     # Só altera fullscreen ao voltar para o login (raramente usado)
     self.fullscreen = false if screen_symbol == :login && fullscreen?
     # Retomando telas de menu: reinicia a música se habilitada
-    menu_screens = %i[login menu campaign ranking options achievements]
+    menu_screens = %i[login menu campaign ranking options achievements congratulations davy_jones_defeat]
     if menu_screens.include?(screen_symbol)
       @waves_music.stop if @waves_music.playing?
       @bg_music.play(true) if @music_enabled && !@bg_music.playing?
@@ -135,6 +138,8 @@ class GameWindow < Gosu::Window
     when :ranking      then @current_screen = RankingScreen.new(self)
     when :options      then @current_screen = OptionsScreen.new(self)
     when :achievements then @current_screen = AchievementsScreen.new(self, @achievement_manager)
+    when :congratulations     then @current_screen = CongratulationsScreen.new(self)
+    when :davy_jones_defeat   then @current_screen = DavyJonesDefeatScreen.new(self)
     else
       @current_screen = MenuScreen.new(self)
     end
