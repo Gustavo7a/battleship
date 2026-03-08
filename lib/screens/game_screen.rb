@@ -4,6 +4,7 @@ require_relative '../models/player'
 require_relative '../models/ai/easy_bot'
 require_relative '../models/ai/medium_bot'
 require_relative '../models/ai/hard_bot'
+require_relative '../models/ai/impossible_bot'
 require_relative '../models/ships/ship'
 require_relative '../models/ships/flattop'
 require_relative '../models/ships/warship'
@@ -174,8 +175,10 @@ class GameScreen < BaseScreen
   end
 
   def register_end(player_fleet:, won:, score: 0)
-    newly = @achievement_manager.register_victory(player_fleet)
-    newly.each { |key| @notification.enqueue(key) }
+    if won
+      newly = @achievement_manager.register_victory(player_fleet)
+      newly.each { |key| @notification.enqueue(key) }
+    end
 
     if @current_user
       duration = (Time.now - @game_start).to_i
@@ -214,9 +217,10 @@ class GameScreen < BaseScreen
 
   def build_ai
     case @difficulty
-    when :easy   then EasyBot.new
-    when :hard   then HardBot.new
-    when :medium then MediumBot.new
+    when :easy       then EasyBot.new
+    when :hard       then HardBot.new
+    when :medium     then MediumBot.new
+    when :impossible then ImpossibleBot.new
     else
       # Modo dinâmico (sem dificuldade definida): usa HardBot
       # Campanha sem dificuldade explícita: usa MediumBot como fallback
@@ -345,6 +349,11 @@ class GameScreen < BaseScreen
       @sfx_splash.play(0.1) if @window.sfx_enabled
     end
 
+    # No modo impossível (fase livre), cada tiro encerra o turno do jogador —
+    # sem bônus de turno extra por acerto. A vez volta ao bot para que ele consuma
+    # um turno livre e só então devolva ao jogador.
+    impossible_free_phase = @ai.respond_to?(:pass_turn?) && @ai.pass_turn?
+
     case result
     when :REPEATED, :INVALID
       log_action("Já atirou aqui! Escolha outra célula.")
@@ -353,12 +362,22 @@ class GameScreen < BaseScreen
       start_player_turn
     when :DAMAGED
       ship = @turn_manager.last_ship
-      log_action("Você acertou #{ship&.class&.name}! Atire de novo.")
       register_shot(result, ship)
+      if impossible_free_phase
+        log_action("Você acertou #{ship&.class&.name}! Vez de Davy Jones.")
+        @turn_manager.end_player_turn_without_shot
+      else
+        log_action("Você acertou #{ship&.class&.name}! Atire de novo.")
+      end
     when :DESTROYED
       ship = @turn_manager.last_ship
-      log_action("Você DESTRUIU #{ship&.class&.name}! Atire de novo.")
       register_shot(result, ship)
+      if impossible_free_phase
+        log_action("Você DESTRUIU #{ship&.class&.name}! Vez de Davy Jones.")
+        @turn_manager.end_player_turn_without_shot
+      else
+        log_action("Você DESTRUIU #{ship&.class&.name}! Atire de novo.")
+      end
     end
 
     check_game_over
@@ -386,6 +405,18 @@ class GameScreen < BaseScreen
 
     # Fase :shoot — IA atira
     @ai_phase = :decide   # reset para o próximo turno
+
+    # Davy Jones: durante os turnos livres apenas passa a vez — sem tiro, sem animação
+    if @ai.respond_to?(:pass_turn?) && @ai.pass_turn?
+      @ai.consume_free_turn
+      remaining = @ai.free_turns_remaining
+      msg = remaining > 0 ? "☠ Davy Jones aguarda... #{remaining} tiro(s) livre(s) restante(s)." \
+                          : "☠ Davy Jones perdeu a paciência! Ele vai atacar no próximo turno!"
+      log_action(msg)
+      @turn_manager.end_ai_turn_without_shot
+      start_player_turn
+      return
+    end
 
     result, ship, x, y = @turn_manager.ai_turn
     coord_str = x && y ? "(#{x + 1}, #{y + 1})" : "?"
@@ -417,13 +448,17 @@ class GameScreen < BaseScreen
   end
 
   def check_game_over
+    return if @game_over
     return unless @turn_manager.game_over?
-    @game_over = true
 
+    @game_over = true
     won   = @turn_manager.winner == :player
     score = calculate_score(won)
 
     @status_message = won ? "Vitória! Você afundou todos os navios do inimigo!" : "Derrota! Todos os seus navios afundaram."
+
+    # Sinaliza conquista Jack Sparrow antes de registrar a vitória
+    @achievement_manager.flag_impossible_victory if won && @difficulty == :impossible
 
     register_end(player_fleet: @player.fleet, won: won, score: score)
   end
@@ -582,6 +617,7 @@ class GameScreen < BaseScreen
   # Desenha as sprites dos navios inimigos completamente destruídos sobre o grid.
   def draw_destroyed_enemy_ships(ox, oy)
     return unless @ai&.fleet
+    # z=8: acima do fundo d'água (z=5), borda (z=6) e crosshair (z=7) de draw_hit_cell
     tint = Gosu::Color.new(0xbb_ff9999)
     @ai.fleet.each do |ship|
       next unless ship.status == Ship::DESTROYED
@@ -591,7 +627,7 @@ class GameScreen < BaseScreen
       px = ox + first_x * @cs + 1
       py = oy + first_y * @cs + 1
       draw_ship_sprite(ship, px, py, ship.orientation, ship.ship_size,
-                       @cs, CELL_GAP, z: 3, color: tint)
+                       @cs, CELL_GAP, z: 8, color: tint)
     end
   end
 
@@ -943,6 +979,9 @@ class GameScreen < BaseScreen
       if left_hover
         if @turn_manager.winner == :player
           @window.on_campaign_mission_won(@campaign_stage)
+        elsif @difficulty == :impossible
+          # Derrota no modo Davy Jones: tela especial
+          @window.request_screen(:davy_jones_defeat)
         else
           @window.request_screen(:campaign)
         end
