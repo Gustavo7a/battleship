@@ -723,6 +723,19 @@ class GameScreen < BaseScreen
     turn_label = @turn_manager&.current_turn == :player ? "◆ Sua vez" : "◆ IA pensando..."
     turn_color = @turn_manager&.current_turn == :player ? Theme::COLOR_ACCENT : Gosu::Color.new(0xff_94a3b8)
     @info_font.draw_text(turn_label, right_x, ry, 2, 1.0, 1.0, turn_color)
+    ry += lh
+
+    if @ai.respond_to?(:free_turns_remaining)
+      remaining = @ai.free_turns_remaining
+      if remaining > 0
+        counter_text  = "☠ Vingança em: #{remaining} tiro(s)"
+        counter_color = Gosu::Color.new(0xff_f97316)
+      else
+        counter_text  = "☠ VINGANÇA ATIVA!"
+        counter_color = Gosu::Color.new(0xff_e53e3e)
+      end
+      @info_font.draw_text(counter_text, right_x, ry, 2, 1.0, 1.0, counter_color)
+    end
   end
 
   def draw_skip_button(bx, by)

@@ -18,7 +18,7 @@ require_relative 'base_ai'
 #
 # @author João Francisco
 class ImpossibleBot < BaseAI
-  FREE_TURNS = 30
+  FREE_TURNS = 45
 
   attr_reader :free_turns_used
 
