@@ -208,7 +208,7 @@ Os testes cobrem: `Board`, `Player`, `TurnManager`, `AchievementManager`, `Datab
 
 ## Autores
 
-Desenvolvido por [**Jurandir Neto**](https://github.com/jurandirtvaz), [**João Francisco**](https://github.com/joaofamello) e [**José Gustavo**](https://github.com/gustavo7a) para a disciplina de PLP.
+Desenvolvido por [**Jurandir Neto**](https://github.com/jurandirtvaz), [**João Francisco**](https://github.com/joaofamello), [**Pablo Roldão**](https://github.com/pabloroldao) e [**José Gustavo**](https://github.com/gustavo7a) para a disciplina de PLP.
 
 ---
 
