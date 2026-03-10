@@ -26,6 +26,7 @@ class HardBot < BaseAI
     super
     @enemy_ships_size = [6, 6, 4, 4, 3, 1]
     @potential_targets = []
+    @current_hunt_hits = []
   end
 
   # Decide a coordenada do próximo tiro.
@@ -41,7 +42,7 @@ class HardBot < BaseAI
     return process_targets(opponent_board) unless @potential_targets.empty?
 
     probability_grid = calculate_probability_map(opponent_board)
-    best_move = find_highest_probability(probability_grid)
+    best_move = find_highest_probability(probability_grid, opponent_board)
 
     best_move
   end
@@ -58,7 +59,7 @@ class HardBot < BaseAI
   # @param opponent_board [Board] Tabuleiro para validar quais vizinhos são válidos.
   # @return [void]
   def register_hit(x, y, opponent_board)
-    direction = detect_direction(opponent_board, x, y)
+    direction = detect_direction(x, y)
 
     if direction == :horizontal || direction == :unknown
       add_valid_neighbor(x - 1, y, opponent_board) # Esq
@@ -69,6 +70,8 @@ class HardBot < BaseAI
       add_valid_neighbor(x, y - 1, opponent_board) # Baixo
       add_valid_neighbor(x, y + 1, opponent_board) # Cima
     end
+
+    @current_hunt_hits << [x, y]
   end
 
   # Registra que um navio foi afundado (DESTROYED).
@@ -82,6 +85,7 @@ class HardBot < BaseAI
   # @return [void]
   def register_sunk(ship_size)
     @potential_targets.clear
+    @current_hunt_hits.clear
 
     index = @enemy_ships_size.index(ship_size)
 
@@ -159,17 +163,23 @@ class HardBot < BaseAI
 
   # Encontra a coordenada com a maior probabilidade no heatmap.
   #
-  # Varre a matriz em busca do maior valor. Em caso de empate (várias células
-  # com a mesma probabilidade máxima), armazena todas e sorteia uma aleatoriamente.
+  # Varre a matriz em busca do maior valor ignorando células já atingidas.
+  # Em caso de empate (várias células com a mesma probabilidade máxima),
+  # armazena todas e sorteia uma aleatoriamente.
+  # Se nenhuma célula tiver probabilidade > 0, sorteia entre todas as células
+  # ainda não atingidas (fallback para quando o heatmap for todo zero).
   #
   # @param grid [Array<Array<Integer>>] A matriz de calor gerada por {calculate_probability_map}.
+  # @param board [Board] Tabuleiro para ignorar células já atingidas.
   # @return [Array<Integer>] A coordenada [x, y] escolhida.
-  def find_highest_probability(grid)
+  def find_highest_probability(grid, board)
 
     biggest_probability = -1
     best_position = []
     10.times do |y|
       10.times do |x|
+        next if board.status_at(x, y) == Board::HIT || board.status_at(x, y) == Board::MISS
+
         current_prob = grid[y][x]
 
         if current_prob > biggest_probability
@@ -218,19 +228,21 @@ class HardBot < BaseAI
     end
   end
 
-  # Tenta determinar a orientação do navio baseado em acertos vizinhos.
+  # Tenta determinar a orientação do navio baseado nos acertos da caçada atual.
   #
-  # Verifica se existe um HIT imediatamente ao lado ou acima/abaixo da coordenada atual.
+  # Verifica se existe um acerto da caçada atual (em @current_hunt_hits)
+  # imediatamente ao lado ou acima/abaixo da coordenada atual.
+  # Usar @current_hunt_hits em vez do tabuleiro evita que células HIT de navios
+  # já destruídos causem detecção de direção incorreta.
   #
-  # @param board [Board] O tabuleiro atual.
   # @param x [Integer] Coordenada X do tiro atual.
   # @param y [Integer] Coordenada Y do tiro atual.
   # @return [Symbol] :horizontal, :vertical ou :unknown (se não houver vizinhos atingidos).
-  def detect_direction(board, x, y)
-    left = (x > 0 && board.status_at(x-1, y) == Board::HIT)
-    right = (x < 9 && board.status_at(x+1, y) == Board::HIT)
-    up = (y > 0 && board.status_at(x, y-1) == Board::HIT)
-    down = (y < 9 && board.status_at(x, y+1) == Board::HIT)
+  def detect_direction(x, y)
+    left  = @current_hunt_hits.include?([x - 1, y])
+    right = @current_hunt_hits.include?([x + 1, y])
+    up    = @current_hunt_hits.include?([x, y - 1])
+    down  = @current_hunt_hits.include?([x, y + 1])
 
     return :horizontal if left || right
     return :vertical if up || down

@@ -113,8 +113,11 @@ class GameWindow < Gosu::Window
   end
 
   def on_campaign_mission_won(stage)
-    @campaign_stage = [stage + 1, 5].min
-    @db.set_campaign_stage(@current_user['id'], @campaign_stage) if @current_user
+    new_stage = [stage + 1, 5].min
+    if new_stage > @campaign_stage
+      @campaign_stage = new_stage
+      @db.set_campaign_stage(@current_user['id'], @campaign_stage) if @current_user
+    end
     # Missão 4 (Davy Jones): tela de parabenização especial
     @pending_screen = stage == 4 ? :congratulations : :campaign
   end

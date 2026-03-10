@@ -4,8 +4,15 @@ require_relative '../ships/ship'
 
 # Implementa o bot de nível intermediário
 #
-# Este bot escolhe de forma aleatória a casa em que vai atirar até que encontre um navio. Assim que o fizer, muda a estratégia usando a abordagem "Hunt and Target" que começa a buscar nas casas adjacentes até que o navio adversário seja destruído.
-# Também possui recurso de inferência de eixo, que analisa dois tiros e compreende se o navio está na vertical ou horizontal.
+# Este bot escolhe de forma aleatória a casa em que vai atirar até que encontre um navio.
+# Assim que o fizer, muda a estratégia usando a abordagem "Hunt and Target" que começa
+# a buscar nas casas adjacentes até que o navio adversário seja destruído.
+# Também possui recurso de inferência de eixo, que analisa dois tiros e compreende
+# se o navio está na vertical ou horizontal.
+#
+# O MediumBot recebe notificações de acerto/destruição do TurnManager via
+# register_hit e register_sunk — métodos chamados APÓS o tiro ser aplicado.
+#
 # @see BaseAI Para entender o funcionamento de MediumBot
 # @author João Francisco
 class MediumBot < BaseAI
@@ -21,43 +28,50 @@ class MediumBot < BaseAI
   # A lógica de decisão segue a ordem:
   # 1. Se houver alvos na fila de prioridade (@target_queue), atira neles.
   # 2. Se a fila estiver vazia, atira aleatoriamente em uma posição válida (não repetida).
-  # 3. Após decidir o tiro, analisa se o disparo acertaria um navio para atualizar sua inteligência futura.
   #
   # @param opponent_board [Board] O tabuleiro do jogador adversário.
   # @return [Array<Integer, Integer>] Um array contendo as coordenadas [x, y] do tiro.
   def shoot(opponent_board)
-    x, y = nil, nil
-
     if @target_queue.any?
-      x, y = @target_queue.shift
-    else
-      loop do
-        x = rand(10)
-        y = rand(10)
+      # Descarta alvos já atingidos antes de usar
+      while @target_queue.any?
+        x, y = @target_queue.shift
         status = opponent_board.status_at(x, y)
-        break if status != Board::HIT && status != Board::MISS
+        return [x, y] if status != Board::HIT && status != Board::MISS
       end
     end
 
-    target_content = opponent_board.status_at(x, y)
-
-    if target_content.is_a?(Ship)
-      will_sink = (target_content.hits) == target_content.ship_size
-
-      if will_sink
-        @first_hit = nil
-        @target_queue.clear
-      else
-        if @first_hit.nil?
-          @first_hit = [x, y]
-          queue_neighbors(x, y, opponent_board)
-        else
-          filter_based_axis(x, y)
-          queue_neighbors(x, y, opponent_board)
-        end
-      end
+    # Modo caça: tiro aleatório
+    loop do
+      x = rand(10)
+      y = rand(10)
+      status = opponent_board.status_at(x, y)
+      return [x, y] if status != Board::HIT && status != Board::MISS
     end
-    [x, y]
+  end
+
+  # Registra um acerto e adiciona vizinhos à fila de alvos.
+  # Chamado pelo TurnManager após o tiro ser aplicado.
+  #
+  # @param x [Integer] Coordenada X do acerto.
+  # @param y [Integer] Coordenada Y do acerto.
+  # @param opponent_board [Board] Tabuleiro para verificação de limites.
+  def register_hit(x, y, opponent_board)
+    if @first_hit.nil?
+      @first_hit = [x, y]
+      queue_neighbors(x, y, opponent_board)
+    else
+      queue_neighbors(x, y, opponent_board)
+      filter_based_axis(x, y)
+    end
+  end
+
+  # Registra que um navio foi afundado e reseta o modo alvo.
+  #
+  # @param ship_size [Integer] Tamanho do navio destruído.
+  def register_sunk(ship_size)
+    @first_hit = nil
+    @target_queue.clear
   end
 
   private
@@ -68,21 +82,16 @@ class MediumBot < BaseAI
   # @param y [Integer] Coordenada Y do tiro atual.
   # @param board [Board] Tabuleiro para verificação de limites.
   def queue_neighbors(x, y, board)
-    neightbors = [[x, y - 1], [x, y + 1], [x - 1, y], [x + 1, y]]
+    neighbors = [[x, y - 1], [x, y + 1], [x - 1, y], [x + 1, y]]
 
-    neightbors.each do |nx, ny|
-      if board.inside_bounds?(nx, ny)
-        status = board.status_at(nx, ny)
-        if status == Board::HIT && status == Board::MISS && !@target_queue.include?([nx, ny])
-          if @first_hit
-            fx, fy = @first_hit
-            next if fx != x && ny != y
-            next if fy != y && nx != x
-          end
+    neighbors.each do |nx, ny|
+      next unless board.inside_bounds?(nx, ny)
 
-          @target_queue << [nx, ny]
-        end
-      end
+      status = board.status_at(nx, ny)
+      next if status == Board::HIT || status == Board::MISS
+      next if @target_queue.include?([nx, ny])
+
+      @target_queue << [nx, ny]
     end
   end
 

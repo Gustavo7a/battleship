@@ -56,11 +56,13 @@ class HardBotTest < Minitest::Test
   end
 
   def test_detect_vertical_hit
-    #Definimos que tem um tiro em (5,4)
-    @board.set_status(5,4, Board::HIT)
+    # Para simular acertos anteriores, deve-se usar register_hit para popular @current_hunt_hits
+    # O bot acerta (5,4) primeiro
+    @board.set_status(5, 4, Board::HIT)
+    @bot.register_hit(5, 4, @board)
 
-    #O bot acerta o 5,5
-    @bot.register_hit(5,5,@board)
+    # Agora acerta (5,5) — deve detectar padrão vertical
+    @bot.register_hit(5, 5, @board)
 
     targets = @bot.instance_variable_get(:@potential_targets)
 
@@ -71,10 +73,12 @@ class HardBotTest < Minitest::Test
   end
 
   def test_detect_horizontal_hit
-    #Definimos que tem um tiro em (4,5)
-    @board.set_status(4,5,Board::HIT)
-    #o Bot acerta em (5,5)
-    @bot.register_hit(5,5,@board)
+    # O bot acerta (4,5) primeiro para popular @current_hunt_hits
+    @board.set_status(4, 5, Board::HIT)
+    @bot.register_hit(4, 5, @board)
+
+    # Agora acerta (5,5) — deve detectar padrão horizontal
+    @bot.register_hit(5, 5, @board)
 
     targets = @bot.instance_variable_get(:@potential_targets)
     assert_includes(targets, [6, 5]) #Tiro na horizontal
